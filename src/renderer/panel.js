@@ -24,10 +24,13 @@ $('tabs').addEventListener('click', (e) => e.target.dataset.tab && showTab(e.tar
 
 // ---- chat -----------------------------------------------------------------------
 function addMessage({ role, text, tag, routineFrom }) {
+  const prev = $('messages').lastElementChild;
+  if (role === 'error' && prev && prev.classList.contains('error') && prev.dataset.text === text) return; // same error again: say it once
   $('messages').querySelector('.empty')?.remove();
   const m = h('div', { className: `msg ${role}` });
   if (tag) m.append(h('span', { className: 'tag', textContent: tag }));
   m.append(text);
+  m.dataset.text = text;
   if (role === 'memo' || role === 'error') $('peek').textContent = text;
   if (routineFrom) { // chat-to-routine: one click turns this finished agent task into a scheduled routine
     m.append(h('button', { className: 'make-routine', textContent: '↻ Repeat this on a schedule', onclick: async (e) => {
@@ -168,11 +171,60 @@ const shutUp = () => window.speechSynthesis && speechSynthesis.cancel();
 const RATE = 16000, FRAME = 4096, FRAME_MS = (FRAME / RATE) * 1000;
 let rec = null;
 
+// Opens the microphone: the one chosen in Settings if it still exists, else the system default, else anything.
+async function openMic() {
+  const tuned = { channelCount: 1, echoCancellation: true, noiseSuppression: true };
+  const tries = [];
+  if (S.settings.micDeviceId) tries.push({ audio: { ...tuned, deviceId: { exact: S.settings.micDeviceId } } });
+  tries.push({ audio: tuned }, { audio: true });
+  let last;
+  for (const constraints of tries) { try { return await navigator.mediaDevices.getUserMedia(constraints); } catch (e) { last = e; } }
+  throw last;
+}
+const micList = async () => (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+// Turns a getUserMedia failure into something the user can act on.
+async function micProblem(e) {
+  const inputs = await micList().catch(() => []);
+  if (!inputs.length) return 'MemoBrOS cannot find any microphone. In your system settings open Sound → Input, choose a microphone and check that its level moves when you speak. Then press "Test microphone" in MemoBrOS Settings → Voice.';
+  if (e.name === 'NotAllowedError') return 'The system refused access to the microphone. Allow it for MemoBrOS in your system privacy settings.';
+  if (e.name === 'NotReadableError') return 'The microphone is busy or could not be started. Close other apps that are using it and try again.';
+  return `The microphone could not be opened (${e.name}: ${e.message}). MemoBrOS sees: ${inputs.map((d) => d.label || 'unnamed input').join(', ')}.`;
+}
+async function fillMics() {
+  const inputs = await micList().catch(() => []);
+  $('set-mic').replaceChildren(h('option', { value: '', textContent: 'System default' }), ...inputs.filter((d) => d.deviceId && d.deviceId !== 'default').map((d, i) => h('option', { value: d.deviceId, textContent: d.label || `Microphone ${i + 1}` })));
+  $('set-mic').value = [...$('set-mic').options].some((o) => o.value === S.settings.micDeviceId) ? S.settings.micDeviceId : '';
+  return inputs;
+}
+// Settings → Voice → Test microphone: opens it for three seconds and reports what was heard.
+async function testMic() {
+  const note = $('mic-test-note');
+  note.textContent = 'Listening for 3 seconds… say something.';
+  let stream;
+  try { S.settings.micDeviceId = $('set-mic').value; stream = await openMic(); }
+  catch (e) { note.textContent = await micProblem(e); await fillMics(); return; }
+  const ctx = new AudioContext(); const an = ctx.createAnalyser(); ctx.createMediaStreamSource(stream).connect(an);
+  const buf = new Float32Array(an.fftSize); let peak = 0;
+  const t0 = performance.now();
+  await new Promise((resolve) => { const tick = () => { an.getFloatTimeDomainData(buf); for (const v of buf) peak = Math.max(peak, Math.abs(v)); performance.now() - t0 < 3000 ? setTimeout(tick, 60) : resolve(); }; tick(); });
+  const label = stream.getAudioTracks()[0]?.label || 'the microphone';
+  stream.getTracks().forEach((t) => t.stop()); ctx.close();
+  await fillMics(); // device names become available once access has been granted
+  note.textContent = peak > 0.02 ? `Working: heard you on "${label}".` : `"${label}" opened, but it was silent. Check that it is not muted and that the right input is selected in your system sound settings.`;
+}
+
 async function startRec(recMode) {
   if (rec) await stopRec(false);
   let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); }
-  catch (e) { addMessage({ role: 'error', text: `Microphone unavailable: ${e.message}. You can still type.` }); if (recMode === 'wake') { wakeArmed = false; call('wake:set', { enabled: false }); } else call('listen:ended'); return; }
+  try { stream = await openMic(); }
+  catch (e) {
+    const why = await micProblem(e);
+    addMessage({ role: 'error', text: `${why} You can still type.` });
+    if (recMode === 'wake') { wakeArmed = false; $('wake-note').textContent = `The wake word was switched off: ${why}`; call('wake:set', { enabled: false }).then((st) => { S = st; renderPermissions(); renderChrome(); }); }
+    else call('listen:ended');
+    return;
+  }
+  $('wake-note').textContent = '';
   const ctx = new AudioContext({ sampleRate: RATE });
   const source = ctx.createMediaStreamSource(stream);
   const node = ctx.createScriptProcessor(FRAME, 1, 1);
@@ -404,8 +456,12 @@ $('mcp-form').addEventListener('submit', async (e) => {
 function renderPermissions() {
   for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).checked = !!S.settings.permissions[k];
   $('perm-control').disabled = !S.caps.control;
+  $('perm-note').hidden = S.caps.control && S.caps.overlay;
+  $('perm-note-text').textContent = S.caps.control ? '' : 'Mouse and keyboard control and the on-screen pointer are not available in native Wayland mode. X11 mode brings both back, for X11 apps.';
   $('set-wake').checked = !!S.settings.wake.enabled;
 }
+$('display-switch').addEventListener('click', () => call('display:set', { backend: 'x11' }));
+$('mic-test').addEventListener('click', testMic);
 for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).addEventListener('change', async (e) => { S = await call('permission:set', { name: k, value: e.target.checked }); renderPermissions(); renderChrome(); });
 $('set-wake').addEventListener('change', async (e) => { S = await call('wake:set', { enabled: e.target.checked }); renderPermissions(); renderChrome(); });
 
@@ -435,6 +491,7 @@ function renderSettings() {
   renderPermissions();
   $('set-wake-word').value = s.wake.word; $('set-wake-aliases').value = s.wake.aliases || '';
   $('set-voice-langs').value = (s.voiceLanguages || []).join(', ');
+  fillMics();
   $('display-row').hidden = S.platform !== 'linux'; $('set-display').value = s.displayBackend || 'auto';
   $('display-note').textContent = S.platform !== 'linux' ? '' : `Running now: ${S.display === 'wayland' ? 'native Wayland' : S.session === 'wayland' ? 'X11 through XWayland' : 'X11'}. ${S.caps.overlay ? '' : 'On native Wayland the on-screen cursor overlay and mouse/keyboard control are not available; dictation copies to the clipboard instead.'}${S.caps.x11Only ? 'Pointing, screen capture and control reach X11 apps only.' : ''}`;
   const hk = S.hotkeys;
@@ -488,7 +545,7 @@ $('settings-form').addEventListener('submit', async (e) => {
       crewGateway: { command: $('set-gateway-cmd').value.trim() },
       launchAtLogin: $('set-autostart').checked, displayBackend: $('set-display').value,
       wake: { word: $('set-wake-word').value.trim() || 'ARVI', aliases: $('set-wake-aliases').value.trim() },
-      voiceLanguages: $('set-voice-langs').value.split(',').map((x) => x.trim()).filter(Boolean),
+      voiceLanguages: $('set-voice-langs').value.split(',').map((x) => x.trim()).filter(Boolean), micDeviceId: $('set-mic').value,
       speak: $('set-speak').checked, voice: $('set-voice').value, dictationPolish: $('set-polish').checked, confirmEachAction: $('set-confirm-each').checked,
       hotkeys: Object.fromEntries(Object.keys(HOTKEY_LABELS).map((k) => [k, $(`hk-${k}`).value.trim()])),
     },

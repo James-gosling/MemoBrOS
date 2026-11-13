@@ -138,9 +138,11 @@
       <label class="check"><input type="checkbox" id="perm-screen">See my screen when I ask (screenshots go to the model you chose)</label>
       <label class="check"><input type="checkbox" id="perm-microphone">Use the microphone</label>
       <label class="check"><input type="checkbox" id="perm-control">Use the mouse and keyboard (agent mode, dictation)</label>
+      <div id="perm-note" class="card" hidden><span id="perm-note-text" class="small"></span><div class="row"><button type="button" id="display-switch">Switch to X11 mode and restart MemoBrOS</button></div></div>
       <h3>Wake word</h3>
       <p class="muted small">Say the word, then your request, in Spanish or English: "ARVI, abre Visual Studio Code", "ARVI, analyze my screen". Detection runs on this computer; audio that is not addressed to the assistant is discarded and never sent anywhere.</p>
       <label class="check"><input type="checkbox" id="set-wake">Listen for the wake word</label>
+      <div id="wake-note" class="small" style="color:var(--mark)"></div>
       <label>Wake word<input id="set-wake-word" maxlength="20"></label>
       <label>Also accept (comma separated spellings, optional)<input id="set-wake-aliases" placeholder="arbi, harvey"></label>
       <h3>Voice</h3>
@@ -153,6 +155,8 @@
       <label>Spoken language<select id="set-lang"></select></label>
       <label class="check"><input type="checkbox" id="set-speak">Read answers aloud</label>
       <label>Voice<select id="set-voice"></select></label>
+      <label>Microphone<select id="set-mic"></select></label>
+      <div class="row" style="margin-top:6px"><button type="button" id="mic-test">Test microphone</button><span id="mic-test-note" class="muted small grow"></span></div>
       <label>Preferred voice languages (first is the default; answers use the language you spoke)<input id="set-voice-langs" placeholder="es-MX, en-US"></label>
       <h3>Dictation</h3>
       <label class="check"><input type="checkbox" id="set-polish">Fix grammar and punctuation before typing</label>

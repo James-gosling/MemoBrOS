@@ -255,6 +255,35 @@ async function x11Part() {
   await app.close().catch(() => {});
 }
 
+// A machine where the app can find no microphone (as reported from a real Ubuntu laptop): no fake audio device here.
+async function noMicPart() {
+  const t = setup('nomic', { permissions: { screen: true, microphone: true, control: true } });
+  const app = current = await _electron.launch({ executablePath: electronBin, args: [...appArgs, '--no-sandbox'], env: t.env });
+  try {
+    const panel = await until(() => app.windows().find((w) => w.url().endsWith('panel.html')), 'panel window');
+    await panel.waitForSelector('.empty');
+    const invoke = (channel, payload) => panel.evaluate(([c, p]) => window.memo.invoke(c, p), [channel, payload]);
+    await check('no microphone: one clear explanation, the wake word switches itself off and says why, and there is a test button', async () => {
+      await panel.click('#tabs [data-tab="settings"]');
+      await panel.check('#set-wake');
+      await until(async () => (await panel.locator('#wake-note').innerText()).includes('cannot find any microphone'), 'reason shown next to the checkbox');
+      await until(async () => !(await panel.locator('#set-wake').isChecked()), 'checkbox returns to off');
+      assert.equal((await invoke('state:get')).wakeOn, false);
+      assert.ok(!(await panel.locator('#ind-mic').isVisible()), 'the mic indicator is not left on');
+      for (let i = 0; i < 3; i++) { await app.evaluate(() => global.__memo.toggleListen('ask')); await sleep(500); }
+      await panel.click('#tabs [data-tab="chat"]');
+      const errors = await panel.locator('.msg.error').allInnerTexts();
+      assert.equal(errors.length, 1, 'the same problem is reported once, not once per attempt');
+      assert.match(errors[0], /cannot find any microphone\. In your system settings open Sound → Input/);
+      await panel.click('#tabs [data-tab="settings"]');
+      await panel.click('#mic-test');
+      await until(async () => (await panel.locator('#mic-test-note').innerText()).includes('cannot find any microphone'), 'test button reports the same');
+      assert.equal(await panel.locator('#set-mic option').count(), 1, 'only "System default" is offered when nothing is found');
+      await panel.screenshot({ path: path.join(out, 'desktop-no-microphone.png') });
+    });
+  } finally { await app.evaluate(({ app: a }) => { a.isQuitting = true; a.quit(); }).catch(() => {}); await app.close().catch(() => {}); }
+}
+
 async function waylandPart() {
   if (spawnSync('which', ['weston']).status !== 0) { console.log('SKIP  native Wayland run (weston is not installed)'); return; }
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-xdg-'));
@@ -287,6 +316,8 @@ async function waylandPart() {
       assert.match(report, /shortcuts portal/); assert.match(report, /Custom Shortcuts, command:.* --toggle/);
       console.log(`      shortcut registration on this compositor: ${st.hotkeys.failed.length ? `failed for ${st.hotkeys.failed.length} (no portal here), fallback offered` : 'ok'}`);
       assert.ok(await panel.locator('#perm-control').isDisabled(), 'mouse/keyboard permission cannot be switched on where it cannot work');
+      assert.match(await panel.locator('#perm-note-text').innerText(), /not available in native Wayland mode\. X11 mode brings both back/, 'and the reason is written right under it');
+      assert.ok(await panel.locator('#display-switch').isVisible(), 'with a one-click switch to X11 mode');
       await panel.screenshot({ path: path.join(out, 'desktop-wayland-settings.png') });
       await panel.click('#tabs [data-tab="chat"]');
     });
@@ -309,8 +340,10 @@ async function waylandPart() {
       console.log(`      screen capture on this compositor: ${outcome === 'captured' ? 'worked' : `not available (${(await panel.locator('.msg.error').last().innerText()).slice(0, 90)}…)`}`);
       assert.ok((await invoke('state:get')).display === 'wayland', 'the app is still alive');
       const exited = new Promise((resolve) => app.process().on('exit', resolve));
-      await ctl(env, '--quit');
-      assert.ok(await Promise.race([exited.then(() => true), sleep(8000).then(() => false)]), '--quit ended the process');
+      await panel.click('#tabs [data-tab="settings"]');
+      await panel.click('#display-switch').catch(() => {});
+      assert.ok(await Promise.race([exited.then(() => true), sleep(8000).then(() => false)]), 'switching display mode restarts the app');
+      assert.equal(JSON.parse(fs.readFileSync(t.settingsFile, 'utf8')).displayBackend, 'x11', 'and the choice is saved');
     });
   } finally {
     if (app) await app.close().catch(() => {});
@@ -322,7 +355,7 @@ async function waylandPart() {
   fs.mkdirSync(out, { recursive: true });
   api = await fake.start();
   try {
-    if (process.env.DISPLAY) await x11Part(); else console.log('SKIP  X11 part (no DISPLAY)');
+    if (process.env.DISPLAY) { await x11Part(); await noMicPart(); } else console.log('SKIP  X11 part (no DISPLAY)');
     await waylandPart();
   } finally { api.close(); }
   const failed = results.filter((r) => r[1] === 'FAIL').length;

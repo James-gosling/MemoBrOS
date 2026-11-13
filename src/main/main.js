@@ -657,6 +657,13 @@ const handlers = {
   'memory:add': ({ note }) => { if (note.trim()) store.addMemory(note); return state(); },
   'memory:delete': ({ id }) => { store.deleteMemory(id); return state(); },
   // window and process control
+  // Linux display mode: saved, then the app restarts itself in that mode.
+  'display:set': ({ backend }) => {
+    store.saveSettings({ displayBackend: backend === 'x11' ? 'x11' : 'auto' });
+    const args = process.argv.slice(1).filter((a) => !a.startsWith('--ozone-platform=') && !CONTROL_FLAGS.includes(a) && a !== '--hidden');
+    app.relaunch({ args });
+    quitApp();
+  },
   'window:compact': ({ compact }) => { setCompact(compact); },
   'window:hide': () => { panel.hide(); },
   'app:quit': () => { quitApp(); },

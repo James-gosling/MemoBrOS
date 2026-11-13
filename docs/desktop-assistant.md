@@ -87,6 +87,15 @@ Off by default. Turn it on in **Settings → Wake word** or from the tray menu.
 - CPU is used only while someone is speaking near the microphone, because each spoken phrase is transcribed.
   A dedicated keyword model would use less; see Recommendations.
 
+### If the microphone does not work
+
+MemoBrOS reports the problem once and says what it found. "Cannot find any microphone" means the system offers
+it no input device at all: open your system Settings → Sound → Input, choose a microphone and check that the
+level moves when you speak. Then use **Settings → Voice → Test microphone** in MemoBrOS, which listens for
+three seconds and tells you which device it opened and whether it heard anything. You can pick a specific
+microphone in the same place. If the wake word cannot open the microphone it switches itself off and shows the
+reason next to its checkbox.
+
 ## Wayland on Ubuntu / GNOME
 
 MemoBrOS prefers to run natively on Wayland when your session is Wayland. It never changes your session and does
@@ -104,6 +113,9 @@ not work around the compositor's protections. What that means in practice:
 | Dictation | Text is copied to the clipboard; press Ctrl+V | Typed into X11 apps |
 | Opening installed apps by name | Yes | Yes |
 | Active-window information | Not available | Not implemented |
+
+To get the pointer and agent control back, press **Switch to X11 mode and restart MemoBrOS** under Settings →
+Permissions (or choose it under Settings → System → Display mode). Switch back the same way.
 
 Closing the gaps on native Wayland needs one of two things, neither built yet: the desktop's remote-control
 portal for input, or a small optional GNOME Shell extension for always-on-top, the pointing overlay and
@@ -128,7 +140,7 @@ Wayland, a scripted stand-in for the model, a fake audio device and a stand-in t
 
 **Not yet verified on the target machine (Ubuntu 26.04.1, GNOME 50.1):**
 
-- that the tray icon appears in the GNOME top bar;
+- (confirmed by the user: the tray icon appears in the GNOME top bar, and the app opens from the applications menu)
 - that GNOME's shortcuts portal accepts the shortcuts on native Wayland (Weston has no portal; registration
   reporting "ok" there proves nothing about GNOME);
 - that the screen-sharing dialog appears and capture works on native Wayland;
