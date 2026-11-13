@@ -1,6 +1,9 @@
 # MemoBrOS as a resident desktop assistant — work plan
 
-Status: **not started**. This file is the hand-off for the next working session. Start at "Phase A".
+Status: **groundwork only**. Three modules are written and unit-checked but **not yet wired into the app**:
+`src/main/platform.js` (display backend and capabilities, native Wayland preferred), `src/main/wake.js`
+(local "ARVI" matching, Spanish/English commands), `src/main/apps.js` (open installed apps by name).
+Next session: start at "Next steps" at the end of this file.
 
 Reference for look and behaviour: HeyClicky (https://www.youtube.com/watch?v=M7EZoppNP8Q): a compact floating
 chat bar (mic button, "+", text field, speaker toggle, send) that sits over other apps, expands into the
@@ -93,6 +96,50 @@ test results · documentation of the new functions · recommendations for later 
 | Active window | none | GNOME gives no portal for this; options to evaluate: a small GNOME Shell extension, or AT-SPI |
 | Voice | Hotkey-toggled listening, on-device Whisper via transformers.js, VAD in `panel.js` | No always-on wake word. Candidates to evaluate: openWakeWord (ONNX, can train a custom "ARVI"), Vosk keyword grammar, Porcupine (needs an access key) |
 | Indicators | Overlay badge and panel status for listening/thinking/acting | No persistent indicator for "capturing screen"; no per-capability permission switches |
+
+## Answers from the user (settled)
+1. Tray icon unverified → implement tray plus a fallback that always allows show, hide and full quit.
+2. Native Wayland is the preferred target; use the GlobalShortcuts portal; on failure give clear diagnostics and
+   a configurable alternative. Do not rely only on X11/XWayland.
+3. A small GNOME Shell extension is acceptable if truly needed: GNOME 50.1 compatible, minimal and auditable,
+   standard APIs, no security bypass, **ask before installing or enabling**, optional, documented, and MemoBrOS
+   must stay usable without it.
+4. ARVI in Spanish and English with automatic detection; default `es-MX`, `en-US` fully supported; reply in the
+   spoken language; configurable language preferences; local recognition; visible mic indicators; manual mic
+   off; no continuous cloud audio; confirmation before sensitive desktop actions.
+Do not mark hardware-dependent features verified until tested on the user's GNOME/Wayland session.
+
+## Next steps (in order)
+**A. Background app**
+- `main.js`: replace the display block with `platform.setup()`; skip the overlay and synthetic input when
+  `caps.overlay` / `caps.control` are false (native Wayland), with clear messages instead of silent failure.
+- Control through a second launch: `memobros --toggle | --show | --hide | --quit | --pause | --resume`
+  (single-instance `second-instance` handler). This is the fallback for tray and shortcuts: the user can bind
+  `memobros --toggle` in GNOME Settings → Keyboard → Custom Shortcuts.
+- "Pause assistant" state (stop tasks, mic, routines, action hotkeys) distinct from hide and quit.
+- In-window Quit button; tray menu with Show/Hide, Pause, Mic, Quit.
+- `scripts/install-desktop.js` (`npm run install:desktop`): writes `~/.local/share/applications/memobros.desktop`
+  with those actions and the icon, for running from the applications menu without a terminal. Optional
+  `--systemd` writes a user unit but never enables it.
+- Verify the `.deb` desktop entry and actions.
+
+**B. Floating interface**
+- Frameless always-on-top panel, no menu bar, custom header (drag, compact/expand, hide, pause, quit).
+- Compact bar like HeyClicky: mic, +, text field, speaker toggle, send; expands to the full tabs.
+- Remember position and mode; discreet CSS transitions.
+- Settings → Shortcuts: show how each shortcut was registered (X11 / portal / failed) and the fallback command.
+
+**D. ARVI** (after A and B)
+- Panel: continuous VAD segments in "wake" mode → local Whisper → `wake.match` → `wake.interpret`.
+- Spoken approvals only count when prefixed with the wake word. Ignore segments while Memo is speaking.
+- Off by default; explicit opt-in; mic indicator; voice chosen per reply language (`wake.languageOf`).
+
+**Permissions** (with A): per-capability switches (screen, control, microphone, wake word), off until the user
+allows each one the first time it is needed; indicators for listening, capturing and controlling.
+
+**C. Desktop interaction on Wayland** (needs on-device testing): one persistent portal screen-share stream
+instead of a prompt per capture; RemoteDesktop portal or the optional GNOME extension for input and
+always-on-top; active-window info via the extension.
 
 ## Open questions for the user
 1. Does the tray icon appear in the GNOME top bar when MemoBrOS runs?
