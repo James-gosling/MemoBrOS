@@ -1,7 +1,7 @@
 {
   "name": "memobros",
   "productName": "MemoBrOS",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MemoBrOS \u2014 a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",
@@ -9,7 +9,7 @@
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "test": "xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js'",
+    "test": "node test/worktrees.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "pack": "electron-builder --dir"

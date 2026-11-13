@@ -56,7 +56,6 @@ function setMode(m) {
   const hk = S.settings.hotkeys;
   $('text').placeholder = { ask: 'Ask about your screen…', agent: 'Tell Memo what to do…', crew: 'Give the crew a goal…', dictate: 'Press the mic, then speak into any app' }[m];
   $('text').disabled = $('send').disabled = m === 'dictate';
-  if (m === 'crew' && S.codeAgent.crewCommand) { $('hint').textContent = `Goal is handed to Kiro Crew ("${S.codeAgent.crewCommand}") in ${S.codeAgent.cwd || 'the project folder'}`; return; }
   if (m === 'crew') { $('hint').textContent = S.codeAgent.enabled && S.codeAgent.cwd ? `Orchestrator + 2–4 subagents · coders run "${S.codeAgent.command}" in ${S.codeAgent.cwd}` : 'Orchestrator + 2–4 subagents · set a project folder in Settings → Coding agent to include coders'; return; }
   $('hint').replaceChildren('Hotkey ', h('kbd', { textContent: pretty(hk[m]) }), m === 'dictate' ? ' toggles dictation. Text lands wherever your cursor is.' : m === 'agent' ? ' · or say "memo agent, …"' : ' · press again when you\'re done talking');
 }
@@ -112,7 +111,7 @@ function renderCrew(agents) {
   if (!agents) return;
   $('crew-count').textContent = `${agents.filter((a) => a.status === 'done').length} / ${agents.length} done`;
   $('crew-agents').replaceChildren(...agents.map((a) => h('div', { className: 'agent', title: a.task }, h('div', { className: 'lamp' }),
-    h('div', {}, h('b', { textContent: a.name }), h('span', { textContent: a.note || { waiting: a.phase === 2 ? 'Waiting for the others' : 'Waiting', working: 'Working…', done: 'Done', failed: 'Failed', stopped: 'Stopped' }[a.status] })),
+    h('div', {}, h('b', { textContent: a.name }), h('span', { textContent: a.note || (a.status === 'done' && a.integration) || { waiting: a.phase === 2 ? 'Waiting for the others' : 'Waiting', working: 'Working…', done: 'Done', failed: 'Failed', stopped: 'Stopped' }[a.status] })),
     h('i', { textContent: a.kind === 'coder' ? 'Kiro' : 'Research' }))).map((n, i) => { n.dataset.status = agents[i].status; return n; }));
 }
 function renderConfirm(c) {
@@ -374,7 +373,8 @@ function renderSettings() {
   $('stt-cloud').hidden = s.sttProvider !== 'cloud';
   $('set-lang').replaceChildren(...Object.entries(LANGS).map(([value, textContent]) => h('option', { value, textContent })));
   $('set-lang').value = s.language;
-  $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-crew-cmd').value = s.codeAgent.crewCommand || '';
+  $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-code-validate').value = s.codeAgent.validate || ''; $('set-code-protected').value = (s.codeAgent.protected || []).join(', ');
+  $('set-gateway-cmd').value = s.crewGateway.command; renderGateway();
   $('set-autostart').checked = !!s.launchAtLogin;
   $('set-speak').checked = s.speak; $('set-polish').checked = s.dictationPolish; $('set-confirm-each').checked = s.confirmEachAction;
   fillVoices();
@@ -386,6 +386,12 @@ function showProvider() {
   $('dict-model-row').hidden = p !== 'anthropic';
 }
 $('set-provider').addEventListener('change', showProvider);
+function renderGateway() {
+  const g = S.gateway;
+  $('gateway-toggle').textContent = g.state === 'running' ? 'Stop gateway' : 'Start gateway';
+  $('gateway-status').textContent = { running: `Running (${g.detail})`, stopped: 'Not running', error: g.detail }[g.state] || g.state;
+}
+$('gateway-toggle').addEventListener('click', async () => { S = await call(S.gateway.state === 'running' ? 'gateway:stop' : 'gateway:start'); renderGateway(); });
 $('code-browse').addEventListener('click', async () => { S = await call('project:pick'); $('set-code-cwd').value = S.settings.codeAgent.cwd; });
 async function findModels(provider, listId, noteId, inputId) {
   $(noteId).textContent = 'Loading…';
@@ -409,7 +415,8 @@ $('settings-form').addEventListener('submit', async (e) => {
       providers: { openrouter: { model: $('set-or-model').value.trim() || 'openrouter/free' }, omniroute: { baseUrl: $('set-omni-url').value.trim() || 'http://localhost:20128/v1', model: $('set-omni-model').value.trim() || 'auto' } },
       model: $('set-model').value, dictationModel: $('set-dict-model').value, sttProvider: $('set-stt').value,
       sttBaseUrl: $('set-stt-url').value.trim(), sttCloudModel: $('set-stt-model').value.trim(), language: $('set-lang').value,
-      codeAgent: { command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), crewCommand: $('set-crew-cmd').value.trim() },
+      codeAgent: { command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), validate: $('set-code-validate').value.trim(), protected: $('set-code-protected').value.split(',').map((x) => x.trim()).filter(Boolean) },
+      crewGateway: { command: $('set-gateway-cmd').value.trim() },
       launchAtLogin: $('set-autostart').checked,
       speak: $('set-speak').checked, voice: $('set-voice').value, dictationPolish: $('set-polish').checked, confirmEachAction: $('set-confirm-each').checked,
       hotkeys: Object.fromEntries(Object.keys(HOTKEY_LABELS).map((k) => [k, $(`hk-${k}`).value.trim()])),
@@ -438,7 +445,7 @@ window.memo.on((e) => {
   else if (e.type === 'walk') renderWalk(e.walk);
   else if (e.type === 'confirm') renderConfirm(e.confirm);
   else if (e.type === 'crew') renderCrew(e.agents);
-  else if (e.type === 'state') { S = e.state; renderSkills(); renderMemory(); renderRoutines(); renderMcp(); }
+  else if (e.type === 'state') { S = e.state; renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderGateway(); }
   else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else stopRec(true); }
 });
 

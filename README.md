@@ -33,9 +33,23 @@ Pick **Crew** in the chat, say "memo crew, …", or schedule it as a routine ("R
 3. Phase-1 agents run at the same time; phase-2 agents (review, tests) run afterwards and see the others' results.
 4. Anything Kiro asks permission for shows up as an approval card in MemoBrOS. The orchestrator then merges the results into one spoken report.
 
-**With Kiro Crew.** Kiro Crew is itself an orchestration platform on top of Kiro CLI. If you run it, put the command that starts it as an ACP agent in Settings → Coding agent → *Kiro Crew command*. Crew mode then hands Kiro Crew the whole goal and lets it coordinate its own agents, while MemoBrOS stays the layer for memory, scheduling and approvals. Leave it empty and MemoBrOS orchestrates Kiro CLI sessions itself.
+Set the project folder in Settings → Coding agent. The coding agent command is `kiro-cli acp` (the `kiro-cli` executable with the argument `acp`); an absolute path such as `"/opt/kiro/bin/kiro-cli" acp` works, as does any other ACP agent command.
 
-Set the project folder (and the command, `kiro-cli acp` by default) in Settings → Coding agent. Any other ACP agent command works there too.
+#### Isolation for parallel coders
+
+Coders never write into the same directory at the same time.
+
+- **One worktree and branch per coder.** In a Git project each coder gets its own branch `memobros/<run>/<agent>` in its own directory outside your project. A directory lock refuses a second writer on the same path.
+- **Failures stay contained.** Whatever an agent leaves behind, including the partial work of one that crashed, is committed to that agent's own branch and nowhere else.
+- **Independent validation.** Each branch is checked on its own (`git diff --check`, plus your check command, e.g. `npm test`, if you set one). Branches that change protected files (`.env*`, keys, lockfiles, CI workflows by default) are held back for you to review.
+- **Conflicts found before integration.** Ready branches are test-merged one by one in a scratch integration worktree. A branch that conflicts is left on its own branch and reported with the files involved. Phase-2 agents start from the integrated phase-1 result.
+- **You approve the merge.** The combined result is checked again, then MemoBrOS shows what would change and waits. On approval your branch is fast-forwarded, and only if it has not moved; Git itself refuses if that would touch your uncommitted changes.
+- **Nothing destructive.** No `reset --hard`, no `clean`, no forced worktree removal, no branch deletion. Worktree directories are removed only when Git confirms they are clean; branches are always kept. If you decline, or the merge cannot be a fast-forward, the work waits on `memobros/<run>/integration`.
+- **Fallback.** If the project is not a Git repository, has no commits, or a worktree cannot be created, coders run one at a time in the project folder instead.
+
+#### Kiro Crew
+
+Kiro Crew is a separate orchestration gateway that drives ACP agents itself. It is not an ACP agent, so MemoBrOS does not speak ACP to it or send it tasks. Settings → Kiro Crew gateway can start and stop it for you with its documented command, `kirocrew gateway`, and show whether it is running; it is never started automatically. MemoBrOS's crew mode drives Kiro CLI directly either way. Deeper integration needs a documented interface from Kiro Crew and is not implemented.
 
 ### Connectors
 
@@ -117,7 +131,9 @@ src/main/routines.js  scheduler, routine storage, and the guardrails around back
 src/main/cron.js      schedule matching (the model writes the schedule; users only see plain words)
 src/main/webagent.js  hidden background browser with persistent sign-ins, page reading, form filling, file upload
 src/main/acp.js       ACP client: starts and drives the coding agent (Kiro CLI) over stdio
-src/main/crew.js      crew mode: orchestrator, 2–4 subagents, optional hand-off to Kiro Crew
+src/main/crew.js      crew mode: orchestrator, 2–4 subagents, per-coder isolation and approval-gated integration
+src/main/worktrees.js Git worktrees, directory locks, validation, conflict detection, fast-forward merge
+src/main/gateway.js   optional start/stop of the Kiro Crew gateway (not ACP)
 src/main/mcp.js       MCP client: remote (streamable HTTP / SSE) and local (stdio) servers
 src/main/screen.js    captures the display under the cursor, maps screenshot pixels ↔ desktop coordinates
 src/main/input.js     synthetic mouse / keyboard / paste (nut.js)
@@ -139,7 +155,9 @@ skills/               starter skills (Figma, DaVinci Resolve, summarize attachme
 npm test
 ```
 
-Launches the real app on a virtual display against a scripted stand-in for the model APIs (both the Anthropic and the OpenAI chat formats) and checks each ability end to end. The second suite covers the free-provider path, natural-language scheduling, chat-to-routine, MCP over stdio and HTTP with approvals, and a background routine that uploads a file to a local web form only after approval. The first suite checks: the screenshot reaches the API, the cursor flies to the pointed spot, annotations are drawn, a walkthrough advances, the agent really clicks and types into another window only after approval, and dictated text is polished and typed into another app's text field. Needs `xvfb-run` (Linux).
+`test/worktrees.test.js` exercises the isolation layer against real Git repositories: one writer per directory, conflict detection, fast-forward-only merging that never overwrites uncommitted work, and non-destructive cleanup. The end-to-end suites then prove through the running app that Kiro CLI is started as `kiro-cli acp`, that the Kiro Crew gateway is only started on request and never spoken ACP to, and that parallel coders, a crashing agent and conflicting branches stay contained until you approve the merge.
+
+The suites launch the real app on a virtual display against a scripted stand-in for the model APIs (both the Anthropic and the OpenAI chat formats) and checks each ability end to end. The second suite covers the free-provider path, natural-language scheduling, chat-to-routine, MCP over stdio and HTTP with approvals, and a background routine that uploads a file to a local web form only after approval. The first suite checks: the screenshot reaches the API, the cursor flies to the pointed spot, annotations are drawn, a walkthrough advances, the agent really clicks and types into another window only after approval, and dictated text is polished and typed into another app's text field. Needs `xvfb-run` (Linux).
 
 ## Prototype limits
 
@@ -148,9 +166,9 @@ Launches the real app on a virtual display against a scripted stand-in for the m
 - The background browser reads pages as text and numbered controls, so heavily scripted sites may not work; the "submit" guardrail recognises standard HTML forms, not every custom button.
 - Only developed and run on Linux, where the AppImage and `.deb` build and the packaged app passes the test suites. The Windows configuration and code paths are written but have not been run on Windows.
 - None of the real connectors (Notion, GitHub, Google Workspace, Figma, Claude Code, Codex) has been connected from here; the OAuth sign-in flow is tested against a local stand-in server. Figma's remote server may refuse apps it has not approved. Google can refuse sign-in inside embedded browsers; the background browser presents itself as plain Chrome to avoid that, without a guarantee.
-- Kiro CLI and Kiro Crew were not available here. The ACP client is tested against a stand-in agent written from the protocol as I understand it; `kiro-cli acp` as the start command, and how Kiro Crew is started as an ACP agent, are unverified. Vercel, Airtable, Supabase and Companio were not connected either.
+- Kiro CLI and Kiro Crew were not installed here. `kiro-cli acp` and `kirocrew gateway` are the commands from Kiro's documentation; the ACP exchange itself is tested against a stand-in agent, not the real Kiro CLI. Vercel, Airtable, Supabase and Companio were not connected either.
+- Worktrees start from your last commit, so coders do not see your uncommitted changes. MemoBrOS cannot stop an agent from writing outside its worktree by absolute path; it reports if files in your project changed during a run.
 - Antigravity: no preset yet. If its `agy` CLI can serve MCP or ACP, add that command under Connectors or Coding agent.
-- Coder subagents that run at the same time share one working tree; the orchestrator is told to give them separate files, but nothing enforces it.
 - Hotkeys toggle listening rather than push-to-talk, and dictation types phrase by phrase at each pause rather than word by word.
 - One display at a time (the one your cursor is on). Installers are unsigned.
 

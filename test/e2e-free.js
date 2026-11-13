@@ -85,11 +85,18 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
   });
 
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-project-'));
-  const acpLog = () => fs.readFileSync(path.join(project, 'acp-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ codeAgent: { command: `node "${path.join(__dirname, 'fixtures', 'fake-acp-agent.js')}"`, cwd: project }, providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
+  // Stand-ins installed as real executables on PATH: `kiro-cli` (an ACP agent) and `kirocrew` (a gateway that is NOT one).
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-bin-'));
+  const acpLogFile = path.join(userData, 'acp-log.jsonl'), gatewayLog = path.join(userData, 'kirocrew');
+  const script = (file, body) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `#!/bin/sh\n${body}\n`); fs.chmodSync(file, 0o755); };
+  script(path.join(bin, 'kiro-cli'), `exec node "${path.join(__dirname, 'fixtures', 'fake-acp-agent.js')}" "$@"`);
+  script(path.join(bin, 'kirocrew'), `echo "$@" > "${gatewayLog}.argv"\ncat > "${gatewayLog}.stdin"\nexec sleep 300`);
+  const acpLog = () => (fs.existsSync(acpLogFile) ? fs.readFileSync(acpLogFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  const git = (cwd, ...a) => require('child_process').execFileSync('git', a, { cwd, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ codeAgent: { cwd: project }, providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
   const app = await _electron.launch({
     executablePath: process.env.MEMOBROS_BIN || require('electron'), args: [...(process.env.MEMOBROS_BIN ? [] : [root]), '--no-sandbox'],
-    env: { ...process.env, OPENROUTER_API_KEY: 'or-test-key', ANTHROPIC_API_KEY: '', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1' },
+    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, ACP_LOG: acpLogFile, OPENROUTER_API_KEY: 'or-test-key', ANTHROPIC_API_KEY: '', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1' },
   });
   const results = [];
   const check = async (name, fn) => {
@@ -306,10 +313,13 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       const log = acpLog();
       const sessions = log.filter((l) => l.session);
       assert.equal(sessions.length, 2, 'one ACP session per coder');
+      assert.equal((await invoke('state:get')).codeAgent.command, 'kiro-cli acp', 'Kiro CLI is the default coding agent');
+      assert.ok(sessions.every((x) => JSON.stringify(x.args) === '["acp"]'), 'started as the kiro-cli executable with the single argument acp');
+      assert.ok(sessions.every((x) => x.cwd === project && fs.realpathSync(x.processCwd) === fs.realpathSync(project)));
       assert.ok(sessions[0].mcpServers.some((m) => m.name === 'Sales DB' && m.command === 'node'), 'local MCP servers are handed to the coding agent');
       assert.ok(sessions[0].mcpServers.some((m) => m.name === 'Weather' && m.headers[0].value === 'Bearer tok-123'), 'token-based remote servers too');
       assert.ok(!sessions[0].mcpServers.some((m) => m.name === 'Workspace'), 'browser-sign-in servers are not handed over');
-      const review = log.find((l) => l.name === 'Reviewer').text;
+      const review = log.find((l) => l.name === 'Reviewer' && l.start).text;
       assert.match(review, /Backend report: wrote api\.js \(yes\)/, 'phase-2 agent sees phase-1 results');
       assert.match(review, /The docs page is titled Expenses/);
       const synth = api.state.requests.at(-1).body.messages.at(-1).content;
@@ -328,6 +338,12 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       await send('ask', 'refactor everything with the crew');
       await until(async () => (await lastMemo()).includes('All four parts done'), 'third crew report', 30000);
       assert.equal(await panel.locator('#crew-agents .agent').count(), 4);
+      // this project has no Git, so worktrees are unavailable: the four coders must take turns in the one folder
+      const spans = ['A1', 'A2', 'A3', 'A4'].map((n) => ({ n, s: acpLog().find((l) => l.name === n && l.start), e: acpLog().find((l) => l.name === n && l.end) }));
+      assert.ok(spans.every((x) => x.s && x.e && x.s.cwd === project), 'all four ran in the project folder');
+      spans.sort((a, b) => a.s.t - b.s.t);
+      for (let i = 1; i < spans.length; i++) assert.ok(spans[i].s.t >= spans[i - 1].e.t, `${spans[i].n} started only after ${spans[i - 1].n} finished (sequential fallback)`);
+      assert.match(api.state.requests.at(-1).body.messages.at(-1).content, /one at a time directly in the project folder, because the project folder is not a Git repository/);
 
       // a refused permission is reported, and a missing coding agent fails that subagent without sinking the rest
       fs.rmSync(path.join(project, 'api.js'));
@@ -337,26 +353,130 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       await panel.click('#confirm-no');
       await until(async () => (await lastMemo()).includes('Nothing was written'), 'report after refusal', 30000);
       assert.ok(!fs.existsSync(path.join(project, 'api.js')));
-      assert.match(acpLog().filter((l) => l.name === 'Checker').at(-1).text, /write was refused/);
+      assert.match(acpLog().filter((l) => l.name === 'Checker' && l.start).at(-1).text, /write was refused/);
       await invoke('settings:save', { settings: { codeAgent: { command: 'definitely-not-installed-agent acp' } } });
       api.state.script = [() => [text(JSON.stringify({ agents: [{ name: 'Coder', kind: 'coder', phase: 1, task: 'code' }, { name: 'Scout', kind: 'researcher', phase: 1, task: 'look' }] }))], () => [text('Scout found it.')], () => [text('The coder could not start; the scout finished.')]];
       await send('crew', 'try with a broken agent');
       await until(async () => (await lastMemo()).includes('coder could not start'), 'report with a failed subagent', 30000);
       assert.match(api.state.requests.at(-1).body.messages.at(-1).content, /## Coder \(coder\) — failed\n"definitely-not-installed-agent" is not installed/);
-      // with a Kiro Crew command set, the whole goal is handed to that platform as one ACP session; approvals still come here
-      const fixture = `node "${path.join(__dirname, 'fixtures', 'fake-acp-agent.js')}"`;
-      await invoke('settings:save', { settings: { codeAgent: { command: fixture, crewCommand: fixture } } });
+      // an absolute executable path (with a space in it) works too
+      const abs = path.join(bin, 'my tools', 'kiro-cli');
+      script(abs, `exec node "${path.join(__dirname, 'fixtures', 'fake-acp-agent.js')}" "$@"`);
+      await invoke('settings:save', { settings: { codeAgent: { command: `"${abs}" acp` } } });
+      const before = acpLog().filter((l) => l.session).length;
+      api.state.script = [() => [text('{"agents":[{"name":"Abs","kind":"coder","phase":1,"task":"look"},{"name":"Abs2","kind":"coder","phase":2,"task":"check"}]}')], () => [text('Absolute path worked.')]];
+      await send('crew', 'use the absolute path');
+      await until(async () => (await lastMemo()).includes('Absolute path worked'), 'report', 30000);
+      assert.equal(acpLog().filter((l) => l.session).length, before + 2);
+      await invoke('settings:save', { settings: { codeAgent: { command: 'kiro-cli acp' } } });
+    });
+
+    await check('Kiro Crew is a gateway, not an ACP agent: started only on request with `kirocrew gateway`, never spoken ACP to, never given crew work', async () => {
+      let st = await invoke('state:get');
+      assert.equal(st.settings.crewGateway.command, 'kirocrew gateway');
+      assert.equal(st.gateway.state, 'stopped', 'the gateway is not started automatically');
+      assert.ok(!fs.existsSync(`${gatewayLog}.argv`));
+      assert.ok(!('crewCommand' in st.settings.codeAgent) && !('crewCommand' in st.codeAgent), 'there is no Kiro Crew ACP command setting');
+      await invoke('gateway:start');
+      await until(async () => (await invoke('state:get')).gateway.state === 'running', 'gateway running');
+      await until(() => fs.existsSync(`${gatewayLog}.stdin`), 'gateway process started');
+      assert.equal(fs.readFileSync(`${gatewayLog}.argv`, 'utf8').trim(), 'gateway');
+      // a crew run while the gateway is up: MemoBrOS still plans it itself and the coders are still kiro-cli
+      const sessionsBefore = acpLog().filter((l) => l.session).length;
       api.state.requests.length = 0;
-      api.state.script = [() => [text('Kiro Crew finished the job.')]];
-      await send('crew', 'WRITE the whole feature');
-      await until(async () => (await confirmTitle()).includes('Kiro Crew wants to: Write api.js'), 'approval card from the delegated crew');
-      await panel.click('#confirm-always');
-      await until(async () => (await lastMemo()).includes('Kiro Crew finished the job'), 'report from the delegated crew', 30000);
-      assert.deepEqual(await panel.locator('#crew-agents b').allInnerTexts(), ['Kiro Crew']);
-      assert.equal(api.state.requests.length, 1, 'MemoBrOS does not split the goal itself when Kiro Crew orchestrates');
-      assert.match(api.state.requests[0].body.messages.at(-1).content, /wrote api\.js \(always\)/);
-      assert.match(acpLog().at(-1).text, /^WRITE the whole feature/);
-      await invoke('settings:save', { settings: { codeAgent: { crewCommand: '' } } });
+      api.state.script = [() => [text('{"agents":[{"name":"G1","kind":"coder","phase":1,"task":"look"},{"name":"G2","kind":"coder","phase":2,"task":"check"}]}')], () => [text('Done with the gateway running.')]];
+      await send('crew', 'work while the gateway runs');
+      await until(async () => (await lastMemo()).includes('Done with the gateway running'), 'report', 30000);
+      assert.match(api.state.requests[0].body.messages[0].content, /orchestrator of a small crew/, 'MemoBrOS did the orchestration');
+      assert.equal(acpLog().filter((l) => l.session).length, sessionsBefore + 2, 'both coders were kiro-cli ACP sessions');
+      assert.equal(fs.readFileSync(`${gatewayLog}.stdin`, 'utf8'), '', 'nothing (no ACP handshake, no task) was written to the gateway');
+      assert.ok(!acpLog().some((l) => l.refused), 'no ACP agent was ever started with gateway arguments');
+      await invoke('gateway:stop');
+      await until(async () => (await invoke('state:get')).gateway.state === 'stopped', 'gateway stopped');
+      st = await invoke('settings:save', { settings: { crewGateway: { command: 'no-such-gateway-binary gateway' } } });
+      await invoke('gateway:start');
+      await until(async () => /not installed or not on PATH/.test((await invoke('state:get')).gateway.detail), 'a missing gateway is reported, not fatal');
+      await invoke('settings:save', { settings: { crewGateway: { command: 'kirocrew gateway' } } });
+    });
+
+    await check('worktree isolation: parallel coders get separate worktrees; failures and conflicts stay contained; merge needs approval; history and local changes survive', async () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-repo-'));
+      git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.name', 'Tester'); git(repo, 'config', 'user.email', 't@example.com');
+      fs.writeFileSync(path.join(repo, 'shared.txt'), 'original\n'); fs.writeFileSync(path.join(repo, 'readme.md'), 'readme\n');
+      git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'first commit');
+      fs.writeFileSync(path.join(repo, 'old.txt'), 'old\n'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'second commit');
+      const history = git(repo, 'log', '--format=%H %s'), base = git(repo, 'rev-parse', 'HEAD');
+      fs.writeFileSync(path.join(repo, 'readme.md'), 'readme with my unsaved edit\n');   // the user's uncommitted change
+      fs.writeFileSync(path.join(repo, 'scratch-notes.txt'), 'untracked notes\n');        // and an untracked file
+      await invoke('settings:save', { settings: { codeAgent: { cwd: repo } } });
+      const from = acpLog().length;
+      api.state.requests.length = 0;
+      api.state.script = [
+        () => [text(JSON.stringify({ agents: [
+          { name: 'Alpha', kind: 'coder', phase: 1, task: 'PUT src/alpha.js alpha code\nPUT shared.txt alpha version' },
+          { name: 'Beta', kind: 'coder', phase: 1, task: 'PUT src/beta.js beta code\nPUT shared.txt beta version' },
+          { name: 'Gamma', kind: 'coder', phase: 1, task: 'PUT src/gamma.js half written\nPUT src/alpha.js gamma trampling alpha\nCRASH' },
+          { name: 'Delta', kind: 'coder', phase: 1, task: 'PUT .env.production SECRET=1\nPUT src/delta.js delta code' },
+        ] }))],
+        () => [text('Alpha is merged; Beta conflicted, Gamma failed and Delta was held back.')],
+      ];
+      await send('crew', 'build four modules');
+      await until(async () => (await confirmTitle()) === "Merge the crew's work into main?", 'merge approval card', 40000);
+      // --- before approval: nothing has reached the project
+      assert.equal(git(repo, 'rev-parse', 'HEAD'), base, 'main has not moved before approval');
+      assert.ok(!fs.existsSync(path.join(repo, 'src')), 'no agent wrote into the project folder');
+      const card = await panel.locator('#confirm-text').innerText();
+      assert.match(card, /Alpha changed 2 files/); assert.match(card, /src\/alpha\.js/); assert.match(card, /Not included: Beta \(conflict[^)]*\), Gamma \(not integrated\), Delta \(held back\)/);
+      await panel.screenshot({ path: path.join(out, 'panel-merge-approval.png') });
+      // --- each coder ran in its own worktree, at the same time
+      const log = acpLog().slice(from);
+      const starts = ['Alpha', 'Beta', 'Gamma', 'Delta'].map((n) => log.find((l) => l.name === n && l.start));
+      assert.equal(new Set(starts.map((x) => x.cwd)).size, 4, 'four different working directories');
+      assert.ok(starts.every((x) => fs.realpathSync(path.dirname(x.cwd)) !== fs.realpathSync(repo) && !x.cwd.startsWith(repo)), 'none of them is inside the project folder');
+      const firstEnd = Math.min(...['Alpha', 'Beta', 'Delta'].map((n) => log.find((l) => l.name === n && l.end).t));
+      assert.ok(starts.every((x) => x.t < firstEnd), 'they overlapped in time (parallel), which is only safe because the directories differ');
+      const branches = git(repo, 'branch', '--format=%(refname:short)').split('\n');
+      const branchOf = (n) => branches.find((b) => b.startsWith('memobros/') && b.endsWith(n));
+      for (const n of ['1-alpha', '2-beta', '3-gamma', '4-delta', 'integration']) assert.ok(branchOf(n), `branch for ${n} exists`);
+      // --- a failed agent cannot overwrite another agent's work
+      assert.equal(git(repo, 'show', `${branchOf('integration')}:src/alpha.js`), 'alpha code', "Alpha's file is exactly what Alpha wrote");
+      assert.equal(git(repo, 'show', `${branchOf('3-gamma')}:src/alpha.js`), 'gamma trampling alpha', "Gamma's stray write stayed on Gamma's own branch");
+      assert.equal(git(repo, 'show', `${branchOf('3-gamma')}:src/gamma.js`), 'half written', "the failed agent's partial work is preserved, not discarded");
+      assert.throws(() => git(repo, 'show', `${branchOf('integration')}:src/gamma.js`), 'nothing from the failed agent was integrated');
+      // --- conflicts are detected before integration; protected files are held back
+      assert.equal(git(repo, 'show', `${branchOf('integration')}:shared.txt`), 'alpha version');
+      assert.equal(git(repo, 'show', `${branchOf('2-beta')}:shared.txt`), 'beta version', 'the conflicting work is kept on its branch');
+      assert.throws(() => git(repo, 'show', `${branchOf('integration')}:src/beta.js`));
+      assert.throws(() => git(repo, 'show', `${branchOf('integration')}:.env.production`), 'the protected file never reached the integration branch');
+      // --- approve: fast-forward only
+      await panel.click('#confirm-yes');
+      await until(async () => (await lastMemo()).includes('Alpha is merged'), 'crew report', 30000);
+      assert.equal(fs.readFileSync(path.join(repo, 'src', 'alpha.js'), 'utf8'), 'alpha code\n');
+      assert.equal(fs.readFileSync(path.join(repo, 'shared.txt'), 'utf8'), 'alpha version\n');
+      assert.ok(!fs.existsSync(path.join(repo, 'src', 'beta.js')) && !fs.existsSync(path.join(repo, 'src', 'gamma.js')) && !fs.existsSync(path.join(repo, '.env.production')));
+      // --- existing files and history are intact
+      assert.equal(fs.readFileSync(path.join(repo, 'readme.md'), 'utf8'), 'readme with my unsaved edit\n', "the user's uncommitted edit survived");
+      assert.equal(fs.readFileSync(path.join(repo, 'scratch-notes.txt'), 'utf8'), 'untracked notes\n', "the user's untracked file survived");
+      assert.equal(fs.readFileSync(path.join(repo, 'old.txt'), 'utf8'), 'old\n');
+      assert.ok(git(repo, 'log', '--format=%H %s').endsWith(history), 'every earlier commit is still there, in order');
+      assert.equal(git(repo, 'merge-base', 'HEAD', base), base, 'main only moved forward');
+      require('child_process').execFileSync('git', ['fsck', '--no-progress'], { cwd: repo });
+      const notes = api.state.requests.at(-1).body.messages.at(-1).content;
+      assert.match(notes, /Beta: conflict with earlier work in shared\.txt/); assert.match(notes, /Gamma: not integrated: the agent failed\. Its partial work is on branch/);
+      assert.match(notes, /Delta: held back: it changed protected files \(\.env\.production\)/); assert.match(notes, /Merged into main \(2 files\)/);
+
+      // declining the merge leaves main alone and keeps the work on its branch
+      const head2 = git(repo, 'rev-parse', 'HEAD');
+      api.state.script = [() => [text('{"agents":[{"name":"Epsilon","kind":"coder","phase":1,"task":"PUT src/eps.js eps"},{"name":"Zeta","kind":"coder","phase":2,"task":"PUT src/zeta.js zeta"}]}')], () => [text('Left on a branch.')]];
+      await send('crew', 'two more modules');
+      await until(async () => (await confirmTitle()) === "Merge the crew's work into main?", 'second merge approval', 40000);
+      await panel.click('#confirm-no');
+      await until(async () => (await lastMemo()).includes('Left on a branch'), 'report', 30000);
+      assert.equal(git(repo, 'rev-parse', 'HEAD'), head2); assert.ok(!fs.existsSync(path.join(repo, 'src', 'eps.js')));
+      const integ = git(repo, 'branch', '--format=%(refname:short)').split('\n').filter((b) => b.endsWith('/integration')).at(-1);
+      assert.equal(git(repo, 'show', `${integ}:src/eps.js`), 'eps'); assert.equal(git(repo, 'show', `${integ}:src/zeta.js`), 'zeta', 'the phase-2 agent built on the integrated phase-1 work');
+      assert.match(api.state.requests.at(-1).body.messages.at(-1).content, /You did not approve the merge/);
+      await invoke('settings:save', { settings: { codeAgent: { cwd: project } } });
     });
 
     let expenseId;

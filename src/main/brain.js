@@ -269,7 +269,7 @@ async function planCrew({ goal, kinds, project, signal }) {
     researcher: '"researcher": a background worker with a private web browser signed in to the user\'s connected accounts and their connected tools (Notion, GitHub, Google Workspace, databases…). It looks things up and does web tasks; it cannot edit local code.',
   };
   const res = await call({
-    system: `You are the orchestrator of a small crew of AI agents inside MemoBrOS. Split the user's goal into parts for two to four subagents. ${nowLine()}\n\nAgent kinds available:\n${kinds.map((k) => `- ${kindHelp[k]}`).join('\n')}\n\nGive each agent a self-contained task: it sees only its own task, the goal and the other agents' task titles. Agents in phase 1 run at the same time, so give coders separate files or areas. Put work that depends on the others' results (review, testing the whole, a summary) in phase 2. Use as few agents as the goal needs, but at least two.\n\nReply with only JSON: {"agents":[{"name":"short role name","kind":"${kinds.join('|')}","phase":1,"task":"…"}]}`,
+    system: `You are the orchestrator of a small crew of AI agents inside MemoBrOS. Split the user's goal into parts for two to four subagents. ${nowLine()}\n\nAgent kinds available:\n${kinds.map((k) => `- ${kindHelp[k]}`).join('\n')}\n\nGive each agent a self-contained task: it sees only its own task, the goal and the other agents' task titles. Agents in phase 1 run at the same time, each coder in its own Git worktree and branch; give coders separate files or areas so their branches merge cleanly. Put work that depends on the others' results (review, testing the whole, a summary) in phase 2. Use as few agents as the goal needs, but at least two.\n\nReply with only JSON: {"agents":[{"name":"short role name","kind":"${kinds.join('|')}","phase":1,"task":"…"}]}`,
     messages: [{ role: 'user', content: goal }],
     effort: 'medium', signal,
   });
@@ -278,10 +278,10 @@ async function planCrew({ goal, kinds, project, signal }) {
   return plan;
 }
 
-async function crewReport({ goal, agents, signal }) {
+async function crewReport({ goal, agents, notes = [], signal }) {
   const res = await call({
-    system: 'You are the orchestrator of a crew of AI agents inside MemoBrOS. The subagents have finished. Tell the user the outcome in two to four plain spoken sentences, in their language: what got done, what did not, and what needs their attention. Be accurate about failures; do not smooth them over.',
-    messages: [{ role: 'user', content: `Goal: ${goal}\n\n${agents.map((a) => `## ${a.name} (${a.kind}) — ${a.status}\n${a.result}`).join('\n\n')}` }],
+    system: 'You are the orchestrator of a crew of AI agents inside MemoBrOS. The subagents have finished. Tell the user the outcome in two to four plain spoken sentences, in their language: what got done, what did not, whether the code changes were merged into their branch or are waiting on a branch, and what needs their attention. Be accurate about failures; do not smooth them over.',
+    messages: [{ role: 'user', content: `Goal: ${goal}\n\n${agents.map((a) => `## ${a.name} (${a.kind}) — ${a.status}\n${a.result}`).join('\n\n')}${notes.length ? `\n\n## Integration\n${notes.map((n) => `- ${n}`).join('\n')}` : ''}` }],
     effort: 'low', signal,
   });
   return textOf(res) || agents.map((a) => `${a.name}: ${a.status}`).join('. ');

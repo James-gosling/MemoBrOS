@@ -22,6 +22,7 @@ const mcp = require('./mcp');
 const web = require('./webagent');
 const routines = require('./routines');
 const crew = require('./crew');
+const gateway = require('./gateway');
 
 let overlay, panel, tray;
 let task = null;            // { abort: AbortController } — the request currently running
@@ -327,7 +328,7 @@ async function doCrew(goal, quiet = false, opts = {}) {
         goal, signal,
         io: {
           update: (agents) => {
-            toPanel({ type: 'crew', agents: agents.map(({ name, kind, phase, status: st, note, task }) => ({ name, kind, phase, status: st, note, task })) });
+            toPanel({ type: 'crew', agents: agents.map(({ name, kind, phase, status: st, note, task, branch, integration }) => ({ name, kind, phase, status: st, note, task, branch, integration })) });
             const working = agents.filter((a) => a.status === 'working').length;
             status('acting', `Crew · ${agents.filter((a) => a.status === 'done').length}/${agents.length} done${working ? `, ${working} working` : ''}`);
           },
@@ -432,7 +433,7 @@ function state() {
   return {
     settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
     keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
-    routines: routines.view(), mcp: mcp.status(), codeAgent: crew.codeAgent(), sharedFolders: store.sharedFolders(),
+    routines: routines.view(), mcp: mcp.status(), codeAgent: crew.codeAgent(), gateway: gateway.status(), sharedFolders: store.sharedFolders(),
     skills: store.listSkills(), pinnedSkillId, memory: store.getMemory(), attachments, walk: walkthrough, listening,
   };
 }
@@ -523,6 +524,9 @@ const handlers = {
     if (!r.canceled && r.filePaths.length) store.saveSettings({ sharedFolders: [...new Set([...store.sharedFolders(), ...r.filePaths])] });
     return state();
   },
+  // Kiro Crew gateway: started and stopped only on the user's request
+  'gateway:start': () => { gateway.start(); return state(); },
+  'gateway:stop': () => { gateway.stop(); return state(); },
   'project:pick': async () => {
     const r = await dialog.showOpenDialog(panel, { title: 'Project folder for the coding agent', properties: ['openDirectory'] });
     if (!r.canceled && r.filePaths[0]) store.saveSettings({ codeAgent: { cwd: r.filePaths[0] } });
@@ -557,13 +561,14 @@ else {
         if (!r.desktop && !r.crew) toPanel({ type: 'message', role: entry.status === 'error' ? 'error' : 'memo', text: entry.summary, tag: `Routine · ${r.name}` });
       },
     });
+    gateway.init(pushState);
     mcp.sync().then(pushState).catch((e) => console.error('MCP', e));
     const failed = registerHotkeys();
     if (failed.length) panel.webContents.once('did-finish-load', () => toPanel({ type: 'message', role: 'error', text: `These hotkeys are taken by another app: ${failed.join(', ')}. Change them in Settings.` }));
   });
   app.on('window-all-closed', () => {});
-  app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); });
+  app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); gateway.stop(); });
   app.on('before-quit', () => { app.isQuitting = true; if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 
-if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, get overlay() { return overlay; }, get panel() { return panel; } };
+if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };
