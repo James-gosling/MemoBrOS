@@ -7,7 +7,13 @@ if (process.env.MEMOBROS_USER_DATA) app.setPath('userData', process.env.MEMOBROS
 
 // Platform setup. Linux: run through X11 (XWayland on Wayland sessions), which the always-on-top overlay,
 // global hotkeys and synthetic input need. Windows: an app id so notifications and the taskbar group correctly.
-if (process.platform === 'linux') app.commandLine.appendSwitch('ozone-platform', 'x11');
+if (process.platform === 'linux') {
+  // MEMOBROS_DISPLAY=wayland runs natively on Wayland instead (overlay, hotkeys and agent input are then limited).
+  app.commandLine.appendSwitch('ozone-platform', process.env.MEMOBROS_DISPLAY === 'wayland' ? 'wayland' : 'x11');
+  // The app draws a chat panel and a few vector shapes; it does not need the GPU. On some drivers the GPU process
+  // crashes under XWayland and windows never appear, so render in software unless MEMOBROS_GPU=1 asks otherwise.
+  if (process.env.MEMOBROS_GPU !== '1') app.disableHardwareAcceleration();
+}
 if (process.platform === 'win32') app.setAppUserModelId('com.memobros.app');
 const startHidden = process.argv.includes('--hidden'); // used by "start with the system"
 

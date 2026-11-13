@@ -117,6 +117,8 @@ npm start
 | Needs | microphone permission | a compositor (for the transparent overlay), `libxtst6`; a notification daemon for routine alerts |
 | Start with the system | Settings → System (installed builds) | Settings → System (writes `~/.config/autostart/memobros.desktop`) |
 
+On Linux the app renders in software (no GPU needed), because the GPU process crashes under XWayland on some drivers. `MEMOBROS_GPU=1 npm start` turns acceleration back on; `MEMOBROS_DISPLAY=wayland npm start` runs natively on Wayland instead of XWayland.
+
 Build each installer on its own platform: `npm install` fetches the speech-recognition runtime for the machine it runs on, so a Windows installer built on Linux would ship without on-device Whisper.
 
 All hotkeys, the model, voice, language and agent caution level ("ask before every single action") are editable in Settings.
