@@ -3,7 +3,8 @@ const SVG = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
 const ink = $('ink'), buddy = $('buddy'), label = $('label'), badge = $('badge'), caption = $('caption');
 
-const HOME = { x: 14, y: 16 };            // where the buddy sits relative to the real cursor
+let HOME = { x: 14, y: 16 };              // where the buddy sits relative to the real cursor
+let follow = true;                        // follow mode: accompany the real cursor when not pointing at something
 let mouse = { x: innerWidth / 2, y: innerHeight / 2 };
 let pos = { ...mouse };
 let flight = null;                        // { from, to, ctrl, t0, dur } — bezier flight to a pointed target
@@ -40,6 +41,7 @@ function frame(now) {
     pos.x += (tx - pos.x) * 0.22; pos.y += (ty - pos.y) * 0.22;
   }
   buddy.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+  buddy.style.visibility = follow || flight || (pointAt && now < pointUntil) ? 'visible' : 'hidden';
   // Caption floats next to the buddy, flipped when it would leave the screen.
   const cw = caption.offsetWidth, ch = caption.offsetHeight;
   let cx = pos.x + 62, cy = pos.y + 56;
@@ -126,6 +128,11 @@ window.memo.on((e) => {
   else if (e.type === 'clear') { clearInk(); pointUntil = 0; }
   else if (e.type === 'caption') showCaption(e.text, e.sticky);
   else if (e.type === 'status') setStatus(e.kind, e.text);
+  else if (e.type === 'follow') {
+    follow = !!e.on;
+    HOME = { x: e.offsetX ?? 14, y: e.offsetY ?? 16 };
+    if (e.size) for (const el of [buddy, buddy.querySelector('.note')]) { el.style.width = `${e.size}px`; el.style.height = `${e.size}px`; }
+  }
   else if (e.type === 'ripple') {
     const r = document.createElement('div');
     r.className = 'ripple'; r.style.left = `${e.x}px`; r.style.top = `${e.y}px`;

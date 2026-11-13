@@ -113,7 +113,7 @@ npm start                 # or: npm run install:desktop, then open MemoBrOS from
    - **OpenRouter (default, free).** Create a free key at openrouter.ai/keys and paste it (or set `OPENROUTER_API_KEY`). The default model is `openrouter/free`; **Find free models** lists the current zero-price models and marks the ones that see images and call tools, which is what Memo needs.
    - **OmniRoute (free tiers, local).** Run [OmniRoute](https://github.com/diegosouzapw/OmniRoute), connect a provider in its dashboard, and paste the key from Dashboard → Endpoints. MemoBrOS talks to `http://localhost:20128/v1` with model `auto`.
    - **Anthropic Claude (paid).** Paste an Anthropic API key (or set `ANTHROPIC_API_KEY`). Default model `claude-opus-5-5`.
-2. Speech recognition defaults to on-device Whisper, which downloads a model from huggingface.co on first use. To use a cloud service instead, pick "Cloud" and enter any OpenAI-compatible transcription endpoint and key.
+2. Speech recognition defaults to on-device Whisper, which downloads a model once (from the sherpa-onnx project on GitHub; pick Tiny, Base or Small in Settings → Voice). To use a cloud service instead, pick "Cloud" and enter any OpenAI-compatible transcription endpoint and key.
 3. You can also type instead of talking; everything works from the panel's text box.
 
 ### Windows and Linux
@@ -151,7 +151,9 @@ src/main/gateway.js   optional start/stop of the Kiro Crew gateway (not ACP)
 src/main/mcp.js       MCP client: remote (streamable HTTP / SSE) and local (stdio) servers
 src/main/screen.js    captures the display under the cursor, maps screenshot pixels ↔ desktop coordinates
 src/main/input.js     synthetic mouse / keyboard / paste (nut.js)
-src/main/stt.js       speech to text: on-device Whisper (transformers.js) or an OpenAI-compatible endpoint
+src/main/stt.js       speech to text entry point: on-device (speech/) or an OpenAI-compatible endpoint
+src/main/speech/      on-device Whisper via sherpa-onnx: model lifecycle, language policy, speech process
+src/main/pointer.js   assistant pointer on native Wayland through the optional GNOME Shell extension
 src/main/store.js     settings, encrypted keys, memory notes, skills (markdown files in the user data folder)
 src/renderer/overlay  transparent click-through window: cursor buddy, annotations, captions
 src/renderer/panel    chat, mic capture with voice-activity detection, text to speech, skills, memory, settings

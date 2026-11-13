@@ -9,14 +9,15 @@
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
+    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && node test/pointer.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "pack": "electron-builder --dir",
     "start:wayland": "electron . --ozone-platform=wayland",
     "start:x11": "electron . --ozone-platform=x11",
     "install:desktop": "node scripts/install-desktop.js",
-    "test:speech": "xvfb-run -a -s \"-screen 0 1280x800x24\" node test/speech-real.test.js"
+    "test:speech": "xvfb-run -a -s \"-screen 0 1280x800x24\" node test/speech-real.test.js",
+    "pointer:install": "node scripts/install-pointer-extension.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
@@ -38,12 +39,14 @@
       "skills/**",
       "assets/**",
       "package.json",
-      "scripts/**"
+      "scripts/**",
+      "gnome-extension/**"
     ],
     "asarUnpack": [
       "**/*.node",
       "node_modules/sherpa-onnx-*/**",
-      "node_modules/@nut-tree-fork/**"
+      "node_modules/@nut-tree-fork/**",
+      "assets/**"
     ],
     "directories": {
       "output": "dist"

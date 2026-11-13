@@ -9,6 +9,7 @@ const { spawn, spawnSync } = require('child_process');
 const { _electron } = require('playwright');
 const fake = require('./fakeLLM');
 const fakeModels = require('./fakeModels');
+const fakeGdbus = require('./fakeGdbus');
 const { text, use } = fake;
 
 const root = path.join(__dirname, '..');
@@ -94,6 +95,28 @@ async function x11Part() {
     await main(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'MemoBrOS').setPosition(140, 90));
     await until(() => saved().window.right === 140 + 420 && saved().window.bottom === 90 + 640, 'position saved');
     await panel.screenshot({ path: path.join(out, 'desktop-expanded.png') });
+  });
+
+  await check('pointer on X11: follow mode accompanies the cursor outside the MemoBrOS window, and can be switched off instantly', async () => {
+    const overlay = app.windows().find((w) => w.url().endsWith('overlay.html'));
+    const buddy = () => overlay.evaluate(() => { const b = document.getElementById('buddy'); const r = b.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), shown: getComputedStyle(b).visibility === 'visible' }; });
+    let st = await state();
+    assert.deepEqual([st.pointer.backend, st.pointer.follow], ['overlay', true]);
+    assert.equal(await main(() => { const o = global.__memo.overlay; return o.isAlwaysOnTop() && !o.isFocusable(); }), true, 'the overlay stays above other windows and never takes focus');
+    await main(() => global.__memo.input.move({ x: 900, y: 200 })); // far from the MemoBrOS window
+    await until(async () => { const b = await buddy(); return b.shown && Math.abs(b.x - 914) < 6 && Math.abs(b.y - 216) < 6; }, 'the pointer follows the real cursor with its offset');
+    st = await invoke('pointer:set', { follow: true, size: 72, offsetX: 30, offsetY: 40 });
+    await main(() => global.__memo.input.move({ x: 760, y: 560 }));
+    await until(async () => { const b = await buddy(); return b.w === 72 && Math.abs(b.x - 790) < 6 && Math.abs(b.y - 600) < 6; }, 'size and offset are configurable').catch(async (e) => { throw new Error(`${e.message}; pointer is ${JSON.stringify(await buddy())}`); });
+    await panel.click('#win-hide');
+    await main(() => global.__memo.input.move({ x: 700, y: 300 }));
+    await until(async () => { const b = await buddy(); return b.shown && Math.abs(b.x - 730) < 6; }, 'it keeps following while the MemoBrOS panel is hidden');
+    await ctl(t.env, '--show');
+    await invoke('pointer:set', { follow: false, size: 48, offsetX: 14, offsetY: 16 });
+    await until(async () => !(await buddy()).shown, 'follow mode off hides it at once');
+    assert.equal(saved().pointer.follow, false, 'the choice is remembered');
+    await invoke('pointer:set', { follow: true, size: 48, offsetX: 14, offsetY: 16 });
+    await until(async () => (await buddy()).shown, 'and on again');
   });
 
   await check('background: closing or hiding the window keeps the assistant running; shortcut and control commands bring it back', async () => {
@@ -377,7 +400,8 @@ async function waylandPart() {
   const weston = spawn('weston', ['--backend=headless', '--socket=memo-wl', '--width=1280', '--height=800'], { env: { ...process.env, XDG_RUNTIME_DIR: runtime }, stdio: 'ignore' });
   await until(() => fs.existsSync(path.join(runtime, 'memo-wl')), 'weston socket', 10000);
   const t = setup('wayland', { permissions: { screen: true, microphone: true, control: true } });
-  const env = { ...t.env, XDG_RUNTIME_DIR: runtime, WAYLAND_DISPLAY: 'memo-wl', XDG_SESSION_TYPE: 'wayland' };
+  const gdbus = fakeGdbus(); // stands in for the optional GNOME Shell pointer extension
+  const env = { ...t.env, PATH: `${gdbus.dir}${path.delimiter}${process.env.PATH}`, XDG_RUNTIME_DIR: runtime, WAYLAND_DISPLAY: 'memo-wl', XDG_SESSION_TYPE: 'wayland' };
   delete env.DISPLAY;
   let app;
   try {
@@ -388,6 +412,8 @@ async function waylandPart() {
     const lastMemo = () => panel.locator('.msg.memo').last().innerText();
     const size = await until(() => panel.evaluate(() => (innerWidth > 0 && innerHeight > 0 ? `${innerWidth}x${innerHeight}` : null)), 'the compositor to map the window', 20000).catch(() => panel.evaluate(() => `${innerWidth}x${innerHeight} compact=${document.body.classList.contains('compact')}`));
     console.log(`      window on Wayland: ${size}`);
+    // Headless Weston may not deliver animation frames, which a normal Playwright click waits for; click through the DOM instead.
+    const tap = (sel) => panel.evaluate((q) => document.querySelector(q).click(), sel);
     const visible = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'MemoBrOS').isVisible());
 
     await check('native Wayland: the app starts without X11, with no overlay, and says what it cannot do there', async () => {
@@ -396,7 +422,7 @@ async function waylandPart() {
       assert.deepEqual([st.caps.overlay, st.caps.control, st.caps.hotkeys], [false, false, 'portal']);
       assert.equal(app.windows().filter((w) => w.url().endsWith('overlay.html')).length, 0, 'no always-on-top overlay window is created');
       assert.match(await app.evaluate(({ app: a }) => a.commandLine.getSwitchValue('enable-features')), /GlobalShortcutsPortal/);
-      await panel.click('#tabs [data-tab="settings"]');
+      await tap('#tabs [data-tab="settings"]');
       assert.match(await panel.locator('#display-note').innerText(), /Running now: native Wayland\..*not available.*clipboard/);
       const report = await panel.locator('#hotkey-report').innerText();
       assert.match(report, /shortcuts portal/); assert.match(report, /Custom Shortcuts, command:.* --toggle/);
@@ -405,14 +431,36 @@ async function waylandPart() {
       assert.match(await panel.locator('#perm-note-text').innerText(), /not available in native Wayland mode\. X11 mode brings both back/, 'and the reason is written right under it');
       assert.ok(await panel.locator('#display-switch').isVisible(), 'with a one-click switch to X11 mode');
       await panel.screenshot({ path: path.join(out, 'desktop-wayland-settings.png') });
-      await panel.click('#tabs [data-tab="chat"]');
+      await tap('#tabs [data-tab="chat"]');
+    });
+
+    await check('pointer on native Wayland: drawn through the GNOME extension when it answers, named in words when it does not', async () => {
+      let st = await until(async () => { const x = await invoke('state:get'); return x.pointer.backend === 'gnome-extension' && x; }, 'the extension is detected');
+      assert.equal(app.windows().filter((w) => w.url().endsWith('overlay.html')).length, 0, 'MemoBrOS itself still draws nothing over other apps');
+      await until(() => gdbus.calls().some((c) => /^SetFollow\|true\|".*assets\/cursor\.png"\|14\|16\|48$/.test(c)), 'follow mode started with the MemoBrOS pointer image');
+      await tap('#tabs [data-tab="settings"]');
+      assert.match(await panel.locator('#pointer-status').innerText(), /GNOME extension above your windows\. It only draws/);
+      await tap('#set-pointer-follow');
+      await until(() => /^SetFollow\|false/.test(gdbus.calls().at(-1)), 'switching follow off reaches the extension at once');
+      await tap('#set-pointer-follow');
+      // guide mode: a pointed target and a highlighted area, mapped onto the monitor under the cursor (2560x1440 at x=1920)
+      await app.evaluate(async () => { const e = global.__memo.extPointer; await e.pointAt({ w: 1280, h: 720 }, 640, 360, 'Export'); await e.highlight({ w: 1280, h: 720 }, { x: 100, y: 100, x2: 300, y2: 200 }, 'Toolbar'); });
+      assert.deepEqual(gdbus.calls().filter((c) => /^(PointAt|Highlight)/.test(c)), ['PointAt|3200|720|"Export"|9', 'Highlight|2120|200|400|200|"Toolbar"|20']);
+      assert.ok(!gdbus.calls().some((c) => /click|key|type/i.test(c.split('|')[0])), 'pointing never sends an input action');
+      // extension gone (disabled or uninstalled): MemoBrOS notices and falls back to words
+      fs.rmSync(path.join(gdbus.dir, 'gdbus'));
+      await tap('#pointer-detect');
+      await until(async () => (await invoke('state:get')).pointer.backend === 'none', 'falls back when the extension stops answering');
+      assert.match(await panel.locator('#pointer-status').innerText(), /optional MemoBrOS Pointer GNOME extension .*npm run pointer:install/);
+      assert.ok(await panel.locator('#set-pointer-follow').isDisabled());
+      await tap('#tabs [data-tab="chat"]');
     });
 
     await check('native Wayland: show/hide/quit from outside work; agent mode explains itself; dictation falls back to the clipboard', async () => {
       await ctl(env, '--hide'); await until(async () => !(await visible()), '--hide');
       await ctl(env, '--toggle'); await until(async () => visible(), '--toggle');
       api.state.requests.length = 0;
-      await panel.click('#modes [data-mode="agent"]'); await panel.fill('#text', 'click the button'); await panel.click('#send');
+      await tap('#modes [data-mode="agent"]'); await panel.fill('#text', 'click the button'); await tap('#send');
       await until(async () => (await lastMemo()).includes("can't move the mouse or type in other apps yet"), 'agent mode says why it cannot run');
       assert.equal(api.state.requests.length, 0);
       fs.writeFileSync(t.heardFile, 'hola desde el dictado');
@@ -421,13 +469,13 @@ async function waylandPart() {
       await until(async () => (await panel.locator('.msg.dictation').last().innerText()).includes('copied'), 'dictation copied instead of typed');
       // a request that needs the screen either works or fails with a clear message; it must not crash the app
       api.state.script = [() => [text('Screen answer.')]];
-      await panel.click('#modes [data-mode="ask"]'); await panel.fill('#text', 'what do you see?'); await panel.click('#send');
+      await tap('#modes [data-mode="ask"]'); await panel.fill('#text', 'what do you see?'); await tap('#send');
       const outcome = await until(async () => ((await lastMemo().catch(() => '')).includes('Screen answer') ? 'captured' : (await panel.locator('.msg.error').last().innerText().catch(() => '')) ? 'explained' : null), 'an answer or a clear error', 20000);
       console.log(`      screen capture on this compositor: ${outcome === 'captured' ? 'worked' : `not available (${(await panel.locator('.msg.error').last().innerText()).slice(0, 90)}…)`}`);
       assert.ok((await invoke('state:get')).display === 'wayland', 'the app is still alive');
       const exited = new Promise((resolve) => app.process().on('exit', resolve));
-      await panel.click('#tabs [data-tab="settings"]');
-      await panel.click('#display-switch').catch(() => {});
+      await tap('#tabs [data-tab="settings"]');
+      await tap('#display-switch').catch(() => {});
       assert.ok(await Promise.race([exited.then(() => true), sleep(8000).then(() => false)]), 'switching display mode restarts the app');
       assert.equal(JSON.parse(fs.readFileSync(t.settingsFile, 'utf8')).displayBackend, 'x11', 'and the choice is saved');
     });

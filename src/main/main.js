@@ -27,6 +27,7 @@ const web = require('./webagent');
 const routines = require('./routines');
 const wake = require('./wake');
 const apps = require('./apps');
+const { ExtensionPointer } = require('./pointer');
 const crew = require('./crew');
 const gateway = require('./gateway');
 
@@ -43,6 +44,7 @@ let agentRunning = false;
 let paused = false;          // "assistant paused": no hotkeys, no listening, no routines; the window still works
 let wakeOn = false;          // the wake word is armed right now
 let hotkeyReport = { failed: [] };
+let extPointer = null;      // the GNOME Shell extension that draws the pointer on native Wayland, when installed
 const activity = { mic: false, screen: false, control: false }; // what MemoBrOS is doing to the machine right now
 
 const toPanel = (event) => panel && !panel.isDestroyed() && panel.webContents.send('memo:event', event);
@@ -191,12 +193,29 @@ function control(flag) {
   return showPanel();
 }
 
+// ---- the assistant pointer: follow mode and which back end draws it -------------------------------
+const pointerBackend = () => (caps.overlay ? 'overlay' : extPointer?.available ? 'gnome-extension' : 'none');
+function applyPointer() {
+  const cfg = store.getSettings().pointer;
+  const follow = !!cfg.follow && !paused;
+  toOverlay({ type: 'follow', on: follow, offsetX: cfg.offsetX, offsetY: cfg.offsetY, size: cfg.size });
+  if (extPointer?.available) extPointer.setFollow(follow, cfg);
+}
+async function detectPointer() {
+  if (caps.overlay || process.platform !== 'linux') return;
+  extPointer ||= new ExtensionPointer(path.join(__dirname, '..', '..', 'assets', 'cursor.png').replace('app.asar', 'app.asar.unpacked'));
+  await extPointer.detect();
+  applyPointer();
+  pushState();
+}
+
 // ---- pause, permissions, indicators -----------------------------------------------------------
 // Pausing stops what is running and makes the assistant deaf and idle; the window and "show/hide" still work.
 function setPaused(value) {
   paused = !!value;
   if (paused) stopEverything();
   routines.pause(paused);
+  applyPointer();
   registerHotkeys();
   syncWake();
   status('idle');
@@ -243,6 +262,7 @@ function stopEverything() {
   if (listening) setListening(null);
   toPanel({ type: 'shutup' });
   toOverlay({ type: 'clear' });
+  extPointer?.clear();
   status('idle');
   if (agentRunning) say('Stopped.');
 }
@@ -252,6 +272,7 @@ async function captureFresh() {
   const display = shots.activeDisplay();
   if (overlay && !overlay.isDestroyed()) overlay.setBounds(display.bounds);
   toOverlay({ type: 'clear' });
+  extPointer?.clear();
   await input.sleep(120); // let old annotations leave the screen before the screenshot
   setActivity({ screen: true });
   try { return await shots.capture(display); } finally { setTimeout(() => setActivity({ screen: false }), 1200); }
@@ -259,17 +280,21 @@ async function captureFresh() {
 
 const hooksFor = (shot) => ({
   point: ({ x, y, label }) => {
-    if (!caps.overlay) return toPanel({ type: 'message', role: 'action', text: `Look for: ${label || 'the highlighted control'}` }); // nothing can be drawn over other apps here
-    return toOverlay({ type: 'point', ...shots.toOverlay(shot, x, y), label });
+    if (caps.overlay) return toOverlay({ type: 'point', ...shots.toOverlay(shot, x, y), label });
+    const named = () => toPanel({ type: 'message', role: 'action', text: `Look for: ${label || 'the highlighted control'}` }); // when nothing can be drawn over other apps
+    if (!extPointer?.available) return named();
+    return extPointer.pointAt(shot, x, y, label).then((ok) => { if (!ok) named(); });
   },
-  draw: (shapes) => toOverlay({
+  draw: (shapes) => (!caps.overlay && extPointer?.available
+    ? Promise.all(shapes.map((sh) => (sh.x2 != null && sh.y2 != null && sh.type !== 'arrow' ? extPointer.highlight(shot, sh, sh.label) : extPointer.pointAt(shot, sh.x2 ?? sh.x, sh.y2 ?? sh.y, sh.label))))
+    : toOverlay({
     type: 'draw',
     shapes: shapes.map((s) => {
       const a = shots.toOverlay(shot, s.x, s.y);
       const b = s.x2 == null || s.y2 == null ? null : shots.toOverlay(shot, s.x2, s.y2);
       return { type: s.type, label: s.label, x: a.x, y: a.y, x2: b?.x, y2: b?.y };
     }),
-  }),
+  })),
   memoryChanged: pushState,
 });
 
@@ -599,6 +624,7 @@ function state() {
   const s = store.getSettings();
   return {
     display: env.display, session: env.session, caps, paused, wakeOn, activity, hotkeys: hotkeyReport, compact: !!(s.window || {}).compact,
+    pointer: { backend: pointerBackend(), ...s.pointer },
     speech: stt.engine.models().all(), speechModel: stt.engine.mainModel(),
     settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
     keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
@@ -685,6 +711,9 @@ const handlers = {
   'assistant:pause': ({ paused: p }) => { setPaused(p); return state(); },
   'wake:set': async ({ enabled }) => { await setWake(enabled); return state(); },
   'permission:set': ({ name, value }) => { if (name in PERMISSIONS) store.saveSettings({ permissions: { [name]: !!value } }); syncWake(); return state(); },
+  // assistant pointer
+  'pointer:set': (cfg) => { store.saveSettings({ pointer: cfg }); applyPointer(); return state(); },
+  'pointer:detect': async () => { await detectPointer(); return state(); },
   // on-device speech models
   'speech:status': () => stt.engine.models().all(),
   'speech:download': ({ model }) => { stt.engine.models().ensure(model).catch(() => {}); return stt.engine.models().all(); }, // outcome arrives as events
@@ -762,6 +791,8 @@ else {
       },
     });
     gateway.init(pushState);
+    detectPointer();
+    overlay?.webContents.once('did-finish-load', applyPointer);
     stt.engine.models().on('change', speechChanged);
     mcp.sync().then(pushState).catch((e) => console.error('MCP', e));
     const failed = registerHotkeys();
@@ -770,7 +801,7 @@ else {
   });
   app.on('window-all-closed', () => {});
   app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); gateway.stop(); stt.stopWorker(); });
-  app.on('before-quit', () => { app.isQuitting = true; if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
+  app.on('before-quit', () => { app.isQuitting = true; extPointer?.stop(); if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 
-if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, stt, wakeMatch: (t) => wake.match(t, store.getSettings().wake.word), worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };
+if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, stt, get extPointer() { return extPointer; }, wakeMatch: (t) => wake.match(t, store.getSettings().wake.word), worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };

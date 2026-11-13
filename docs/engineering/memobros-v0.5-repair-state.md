@@ -49,6 +49,31 @@ See the end of this file.
   real tiny/base/small models and synthetic Spanish/English speech inside the app.
 - Remaining for speech: real microphone and real human voice on the target laptop.
 
+### Milestone 2 (done, committed): pointer, dependency audit, packaging, documentation
+
+- Pointer: follow and guide modes; X11 overlay honours follow/size/offset (tested); native Wayland goes through
+  the optional GNOME Shell extension `gnome-extension/memobros-pointer@memobros.app` via `src/main/pointer.js`
+  (driver tested against a stand-in `gdbus`; **the extension itself has never run on GNOME**).
+- `scripts/install-pointer-extension.js` copies the extension and never enables it.
+- `.deb` 0.5.1 builds (117 MB), installs, and the real-model speech test passes against the installed app.
+- npm audit: 13 moderate, none reachable from MemoBrOS code; nothing force-fixed. Documented.
+- User documentation: `docs/desktop-assistant.md` (speech, languages, pointer, checklist, npm notes).
+
+### Test results at this point
+
+worktrees 8/8 · voice 7/7 · speech-models 11/11 · pointer 4/4 · e2e 9/9 · e2e-free 13/13 · e2e-desktop 13/13 ·
+speech-real 4/4 (source tree and installed .deb).
+
+### Still open
+
+1. **Exit 133 root cause in the old engine: unidentified** (see findings 1-3). The engine is gone; the question
+   only matters if someone brings it back.
+2. On the target laptop: real microphone + human voice with tiny/base/small; ARVI accuracy in es/en.
+3. GNOME extension on GNOME Shell 50.1 (follow, guide, multi-monitor, scaling). Expect small API fixes.
+4. Wayland input control (remote-desktop portal) and active-window info: not started.
+5. Persistent screen-share stream on Wayland instead of a prompt per capture: not started.
+
 ### Next executable action
 
-P4: desktop-wide assistant pointer for GNOME Wayland (optional GNOME Shell extension + driver), then final docs.
+Run the checklist in `docs/desktop-assistant.md` ("Checklist for the target desktop") on the laptop and fix what
+it shows, starting with step 1 (speech) and step 2 (ARVI `heard:` lines).

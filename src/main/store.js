@@ -37,6 +37,8 @@ const DEFAULTS = {
   voiceLanguages: ['es-MX', 'en-US'], // preferred voices, first is the default
   displayBackend: 'auto', // Linux: 'auto' (native Wayland on Wayland sessions) or 'x11' (through XWayland)
   window: { compact: false },
+  // The assistant pointer that accompanies the real cursor (it never replaces it). Offsets and size in pixels.
+  pointer: { follow: true, offsetX: 14, offsetY: 16, size: 48 },
   launchAtLogin: false, // start hidden with the system so routines keep running
   speak: true,
   voice: '',
@@ -70,7 +72,7 @@ function getSettings() {
   if (!settings) {
     const saved = readJson('settings.json', {});
     settings = { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...(saved.hotkeys || {}) }, providers: mergeProviders(DEFAULTS.providers, saved.providers), codeAgent: { ...DEFAULTS.codeAgent, ...(saved.codeAgent || {}) }, crewGateway: { ...DEFAULTS.crewGateway, ...(saved.crewGateway || {}) },
-      permissions: { ...DEFAULTS.permissions, ...(saved.permissions || {}) }, wake: { ...DEFAULTS.wake, ...(saved.wake || {}) }, window: { ...DEFAULTS.window, ...(saved.window || {}) } };
+      permissions: { ...DEFAULTS.permissions, ...(saved.permissions || {}) }, wake: { ...DEFAULTS.wake, ...(saved.wake || {}) }, window: { ...DEFAULTS.window, ...(saved.window || {}) }, pointer: { ...DEFAULTS.pointer, ...(saved.pointer || {}) } };
   }
   return settings;
 }
@@ -83,7 +85,7 @@ function saveSettings(patch) {
   const next = { ...getSettings(), ...patch };
   if (patch.codeAgent) next.codeAgent = { ...getSettings().codeAgent, ...patch.codeAgent };
   if (patch.crewGateway) next.crewGateway = { ...getSettings().crewGateway, ...patch.crewGateway };
-  for (const k of ['permissions', 'wake', 'window']) if (patch[k]) next[k] = { ...getSettings()[k], ...patch[k] };
+  for (const k of ['permissions', 'wake', 'window', 'pointer']) if (patch[k]) next[k] = { ...getSettings()[k], ...patch[k] };
   if (patch.providers) next.providers = mergeProviders(getSettings().providers, patch.providers);
   if (patch.hotkeys) next.hotkeys = { ...getSettings().hotkeys, ...patch.hotkeys };
   settings = next;

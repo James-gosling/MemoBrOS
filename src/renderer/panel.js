@@ -485,6 +485,21 @@ $('mcp-form').addEventListener('submit', async (e) => {
   } catch (err) { $('mcp-note').textContent = clean(err); }
 });
 
+function renderPointer() {
+  const p = S.pointer;
+  $('pointer-status').textContent = {
+    overlay: 'Drawn by MemoBrOS above your windows. It points at things when Memo answers; it never clicks by itself.',
+    'gnome-extension': 'Drawn by the MemoBrOS Pointer GNOME extension above your windows. It only draws; it never clicks or types.',
+    none: S.platform === 'linux' ? 'Not available in native Wayland mode without the optional MemoBrOS Pointer GNOME extension (in a terminal: npm run pointer:install, then follow what it prints), or switch to X11 mode under Permissions. Until then Memo names the control instead of pointing.' : 'Not available.',
+  }[p.backend];
+  $('set-pointer-follow').checked = !!p.follow; $('set-pointer-follow').disabled = p.backend === 'none';
+  $('set-pointer-size').value = p.size; $('set-pointer-x').value = p.offsetX; $('set-pointer-y').value = p.offsetY;
+  $('pointer-detect').hidden = p.backend === 'overlay';
+}
+const savePointer = async () => { S = await call('pointer:set', { follow: $('set-pointer-follow').checked, size: Number($('set-pointer-size').value) || 48, offsetX: Number($('set-pointer-x').value) || 0, offsetY: Number($('set-pointer-y').value) || 0 }); renderPointer(); };
+for (const id of ['set-pointer-follow', 'set-pointer-size', 'set-pointer-x', 'set-pointer-y']) $(id).addEventListener('change', savePointer);
+$('pointer-detect').addEventListener('click', async () => { S = await call('pointer:detect'); renderPointer(); });
+
 function renderPermissions() {
   for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).checked = !!S.settings.permissions[k];
   $('perm-control').disabled = !S.caps.control;
@@ -521,7 +536,7 @@ function renderSettings() {
   $('stt-cloud').hidden = s.sttProvider !== 'cloud';
   $('set-lang').replaceChildren(...Object.entries(LANGS).map(([value, textContent]) => h('option', { value, textContent })));
   $('set-lang').value = s.language;
-  renderPermissions();
+  renderPermissions(); renderPointer();
   $('set-wake-word').value = s.wake.word; $('set-wake-aliases').value = s.wake.aliases || '';
   $('set-voice-langs').value = (s.voiceLanguages || []).join(', ');
   fillMics();
@@ -607,7 +622,7 @@ window.memo.on((e) => {
   else if (e.type === 'walk') { if (e.walk) needFull(); renderWalk(e.walk); }
   else if (e.type === 'confirm') { if (e.confirm) needFull(); renderConfirm(e.confirm); }
   else if (e.type === 'crew') renderCrew(e.agents);
-  else if (e.type === 'state') { S = e.state; renderChrome(); renderPermissions(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderGateway(); }
+  else if (e.type === 'state') { S = e.state; renderChrome(); renderPermissions(); renderPointer(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderGateway(); }
   else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else endRec(true); }
   else if (e.type === 'wake') { wakeArmed = e.on; S.wakeOn = e.on; S.settings.wake.word = e.word; ensureWake(); renderChrome(); }
   else if (e.type === 'speech') speechEvent(e.status);
