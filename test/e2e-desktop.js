@@ -223,6 +223,16 @@ async function x11Part() {
     assert.equal(await confirmTitle(), 'Approve this plan?', 'an unaddressed "sí" does not approve');
     await hear('ARVI, sí');
     await until(async () => (await lastMemo()).includes('Hecho.'), 'approved by name', 30000);
+    // text the recogniser invents from noise (a phrase in a loop) is never acted on, by wake word or by hotkey
+    const loop = `ARVI, I'm not sure if I can ${'get a chance to '.repeat(30)}get`;
+    api.state.requests.length = 0;
+    const before = await panel.locator('.msg.user').count();
+    await hear(loop); await sleep(300);
+    fs.writeFileSync(t.heardFile, loop.replace('ARVI, ', ''));
+    await panel.evaluate(() => window.memo.invoke('audio:segment', { pcm: new Float32Array(16000).buffer, mode: 'ask', final: true }));
+    fs.writeFileSync(t.heardFile, '');
+    await until(async () => (await lastError()).includes('No te entendí bien'), 'asks the user to repeat instead');
+    assert.equal(api.state.requests.length, 0, 'nothing invented reaches the model'); assert.equal(await panel.locator('.msg.user').count(), before);
     // the real microphone path: armed recording → spoken segment → local transcript → command
     fs.writeFileSync(t.heardFile, 'ARVI, oculta la ventana');
     await until(async () => !(await win()).visible, 'a phrase from the microphone hid the window', 25000);

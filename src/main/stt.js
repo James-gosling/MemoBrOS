@@ -25,7 +25,10 @@ async function localTranscribe(pcm, language, onProgress) {
   }
   const opts = { task: 'transcribe', chunk_length_s: 30 };
   if (language && language !== 'auto') opts.language = language;
-  const out = await localAsr.pipe(pcm, opts);
+  let out;
+  // Whisper can get stuck repeating a phrase on noisy or quiet audio; forbidding repeated word triples stops the loop.
+  try { out = await localAsr.pipe(pcm, { ...opts, no_repeat_ngram_size: 3 }); }
+  catch { out = await localAsr.pipe(pcm, opts); }
   return (out.text || '').trim();
 }
 
@@ -52,6 +55,23 @@ async function cloudTranscribe(pcm, language) {
   return ((await res.json()).text || '').trim();
 }
 
+// Speech models invent text when they are given noise, silence or a faint voice: a phrase repeated over and over, or
+// stock lines from their training data. Such a transcript must never be acted on as if the user had said it.
+const STOCK = /^(thank you( very much| so much)?|thanks( for watching)?|you|bye|okay|gracias( por ver( el video)?)?|subt[ií]tulos (realizados )?por la comunidad de amara\.org|subtitles by the amara\.org community|\[.*\]|\(.*\)|♪.*|\.+)[.!]*$/i;
+function garbled(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (STOCK.test(t)) return true;
+  const words = t.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').split(/\s+/).filter(Boolean);
+  if (words.length < 9) return false;
+  const triples = [];
+  for (let i = 0; i + 2 < words.length; i++) triples.push(words.slice(i, i + 3).join(' '));
+  if (new Set(triples).size / triples.length < 0.6) return true; // the same few words going round and round
+  const counts = {};
+  for (const w of words) counts[w] = (counts[w] || 0) + 1;
+  return Math.max(...Object.values(counts)) / words.length > 0.45; // one word making up almost half of it
+}
+
 // opts.localOnly: never use a cloud service for this audio (wake-word listening).
 async function transcribe(pcm, onProgress, opts = {}) {
   if (process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE) { try { return require('fs').readFileSync(process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE, 'utf8').trim(); } catch { return ''; } } // test hook
@@ -61,4 +81,4 @@ async function transcribe(pcm, onProgress, opts = {}) {
   return s.sttProvider === 'cloud' ? cloudTranscribe(pcm, s.language) : localTranscribe(pcm, s.language, onProgress);
 }
 
-module.exports = { transcribe };
+module.exports = { transcribe, garbled };

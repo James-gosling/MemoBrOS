@@ -525,6 +525,8 @@ async function heard(pcm) {
   let text = '';
   try { text = await stt.transcribe(pcm, sttProgress, { localOnly: true }); }
   catch (e) { await setWake(false); toPanel({ type: 'message', role: 'error', text: `Wake word turned off: ${e.message || e}` }); return; }
+  if (s.wake.debug && text) toPanel({ type: 'message', role: 'action', text: `heard: ${text.slice(0, 120)}` }); // optional, for tuning; stays on this computer
+  if (stt.garbled(text)) return; // the recogniser made something up from noise
   const hit = wake.match(text, s.wake.word, String(s.wake.aliases || '').split(',').map((x) => x.trim()).filter(Boolean));
   if (!hit) return; // not addressed to the assistant: forget it
   const cmd = wake.interpret(hit.command);
@@ -626,6 +628,11 @@ const handlers = {
     try { text = await stt.transcribe(samples, sttProgress); }
     catch (e) { status('idle'); toPanel({ type: 'message', role: 'error', text: e.message || String(e) }); return; }
     if (!text) { status('idle'); return; }
+    if (stt.garbled(text)) { // noise or a faint voice turned into invented text: do not act on it
+      status('idle');
+      toPanel({ type: 'message', role: 'error', text: 'No te entendí bien, ¿puedes repetirlo más cerca del micrófono? / I didn\'t catch that, please say it again closer to the microphone.' });
+      return;
+    }
     route(text, mode);
   },
   'confirm:answer': ({ ok }) => resolveConfirm(ok === 'always' ? 'always' : !!ok),

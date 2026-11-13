@@ -173,7 +173,7 @@ let rec = null;
 
 // Opens the microphone: the one chosen in Settings if it still exists, else the system default, else anything.
 async function openMic() {
-  const tuned = { channelCount: 1, echoCancellation: true, noiseSuppression: true };
+  const tuned = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   const tries = [];
   if (S.settings.micDeviceId) tries.push({ audio: { ...tuned, deviceId: { exact: S.settings.micDeviceId } } });
   tries.push({ audio: tuned }, { audio: true });
@@ -250,7 +250,7 @@ async function startRec(recMode) {
       else if (r.speechMs >= 300 && (r.silenceMs >= 600 || segMs >= 12000)) flush(r, false);
     } else if (r.mode === 'dictate') {
       if (r.speechMs >= 250 && (r.silenceMs >= 700 || segMs >= 25000)) flush(r, false);
-    } else if ((r.speechMs >= 250 && r.silenceMs >= 1500) || segMs >= 45000) endRec(true);
+    } else if ((r.speechMs >= 250 && r.silenceMs >= 1500) || segMs >= 25000) endRec(true); // long recordings of mostly noise make the recogniser invent text
     else if (!r.speechMs && r.totalMs >= 9000) endRec(true);
   };
   $('mic').classList.toggle('on', recMode !== 'wake');
@@ -483,6 +483,7 @@ function renderSettings() {
   $('set-omni-key').value = ''; $('set-omni-key').placeholder = S.keys.omniroute ? 'Saved' : 'Optional for a local gateway';
   $('set-key').value = ''; $('set-key').placeholder = S.keys.anthropic ? 'Saved. Paste a new key to replace it' : 'sk-ant-…';
   $('set-model').value = s.model; $('set-dict-model').value = s.dictationModel;
+  $('set-stt-local').value = s.sttLocalModel; $('set-wake-debug').checked = !!s.wake.debug;
   $('set-stt').value = s.sttProvider; $('set-stt-url').value = s.sttBaseUrl; $('set-stt-model').value = s.sttCloudModel;
   $('set-stt-key').value = ''; $('set-stt-key').placeholder = S.hasSttKey ? 'Saved' : 'API key for the endpoint';
   $('stt-cloud').hidden = s.sttProvider !== 'cloud';
@@ -544,7 +545,8 @@ $('settings-form').addEventListener('submit', async (e) => {
       codeAgent: { command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), validate: $('set-code-validate').value.trim(), protected: $('set-code-protected').value.split(',').map((x) => x.trim()).filter(Boolean) },
       crewGateway: { command: $('set-gateway-cmd').value.trim() },
       launchAtLogin: $('set-autostart').checked, displayBackend: $('set-display').value,
-      wake: { word: $('set-wake-word').value.trim() || 'ARVI', aliases: $('set-wake-aliases').value.trim() },
+      wake: { word: $('set-wake-word').value.trim() || 'ARVI', aliases: $('set-wake-aliases').value.trim(), debug: $('set-wake-debug').checked },
+      sttLocalModel: $('set-stt-local').value,
       voiceLanguages: $('set-voice-langs').value.split(',').map((x) => x.trim()).filter(Boolean), micDeviceId: $('set-mic').value,
       speak: $('set-speak').checked, voice: $('set-voice').value, dictationPolish: $('set-polish').checked, confirmEachAction: $('set-confirm-each').checked,
       hotkeys: Object.fromEntries(Object.keys(HOTKEY_LABELS).map((k) => [k, $(`hk-${k}`).value.trim()])),

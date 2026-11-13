@@ -143,6 +143,7 @@
       <p class="muted small">Say the word, then your request, in Spanish or English: "ARVI, abre Visual Studio Code", "ARVI, analyze my screen". Detection runs on this computer; audio that is not addressed to the assistant is discarded and never sent anywhere.</p>
       <label class="check"><input type="checkbox" id="set-wake">Listen for the wake word</label>
       <div id="wake-note" class="small" style="color:var(--mark)"></div>
+      <label class="check"><input type="checkbox" id="set-wake-debug">Show in the chat what the wake word hears (for tuning; stays on this computer)</label>
       <label>Wake word<input id="set-wake-word" maxlength="20"></label>
       <label>Also accept (comma separated spellings, optional)<input id="set-wake-aliases" placeholder="arbi, harvey"></label>
       <h3>Voice</h3>
@@ -152,6 +153,7 @@
         <label>Model<input id="set-stt-model"></label>
         <label>API key<input id="set-stt-key" type="password" autocomplete="off"></label>
       </div>
+      <label>On-device model (larger understands better, especially Spanish, but is slower and a bigger download)<select id="set-stt-local"><option value="Xenova/whisper-tiny">Tiny (fastest, ~40 MB)</option><option value="Xenova/whisper-base">Base (~80 MB)</option><option value="Xenova/whisper-small">Small (most accurate, ~250 MB)</option></select></label>
       <label>Spoken language<select id="set-lang"></select></label>
       <label class="check"><input type="checkbox" id="set-speak">Read answers aloud</label>
       <label>Voice<select id="set-voice"></select></label>

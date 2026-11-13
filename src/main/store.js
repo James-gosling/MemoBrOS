@@ -32,7 +32,7 @@ const DEFAULTS = {
   // Capabilities are off until the user allows each one, the first time it is needed.
   permissions: { screen: false, microphone: false, control: false },
   // Wake word: local detection, off until switched on. `aliases` adds extra spellings a recogniser may produce.
-  wake: { enabled: false, word: 'ARVI', aliases: '' },
+  wake: { enabled: false, word: 'ARVI', aliases: '', debug: false },
   micDeviceId: '', // which microphone to use; empty means the system default
   voiceLanguages: ['es-MX', 'en-US'], // preferred voices, first is the default
   displayBackend: 'auto', // Linux: 'auto' (native Wayland on Wayland sessions) or 'x11' (through XWayland)

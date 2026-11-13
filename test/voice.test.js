@@ -57,6 +57,15 @@ test('the language of a sentence picks the voice', () => {
   assert.equal(wake.languageOf('Opening the project for you'), 'en');
 });
 
+test('text the recogniser invents from noise is never treated as something the user said', () => {
+  const { garbled } = require('../src/main/stt');
+  const loop = `I'm not sure if I can ${'get a chance to '.repeat(40)}get`;
+  assert.equal(garbled(loop), true, 'a phrase repeated in a loop');
+  for (const t of ['Thank you.', 'Thanks for watching!', 'Subtítulos realizados por la comunidad de Amara.org', '[Música]', 'you', 'no no no no no no no no no no no no', 'la la la la la la la la la la']) assert.equal(garbled(t), true, t);
+  for (const t of ['ARVI, abre Visual Studio Code', 'ARVI, analiza mi pantalla y dime qué botón debo pulsar para exportar el video', 'How do I add a scroll animation to this selected section in Framer? Point to each step and wait for me to follow it.',
+    'Every Tuesday at 5 PM, check my inbox for invoices and tell me what arrived', 'sí', 'no, no, espera', 'Arvi', 'memo agent, abre el navegador y busca el clima de hoy en la Ciudad de México']) assert.equal(garbled(t), false, t);
+});
+
 test('installed applications are found by spoken name and started detached', async () => {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'apps-'));
   fs.mkdirSync(path.join(data, 'applications'));
