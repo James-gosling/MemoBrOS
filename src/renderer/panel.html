@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>MemoBrOS</title>
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 44 44" width="26" height="26" aria-hidden="true"><path d="M6 6 H38 V28 L28 38 H6 Z" fill="#ffcd3c" stroke="#1d1a14" stroke-width="2.5" stroke-linejoin="round"/><path d="M38 28 H28 V38 Z" fill="#e0a800" stroke="#1d1a14" stroke-width="2.5" stroke-linejoin="round"/><circle cx="17" cy="19" r="2.6" fill="#1d1a14"/><circle cx="27" cy="19" r="2.6" fill="#1d1a14"/><path d="M17 26 Q22 30 27 26" fill="none" stroke="#1d1a14" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <span>Memo<b>BrOS</b></span>
+  </div>
+  <nav id="tabs">
+    <button data-tab="chat" class="on">Chat</button>
+    <button data-tab="skills">Skills</button>
+    <button data-tab="memory">Memory</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-chat" class="tab on">
+    <div id="status" data-kind="idle"><span class="dot"></span><span id="status-text">Ready</span><button id="stop" class="ghost danger" hidden>Stop</button></div>
+    <div id="messages"></div>
+    <div id="walk" class="card" hidden>
+      <div class="card-title"><span id="walk-title"></span><span id="walk-count" class="muted"></span></div>
+      <ol id="walk-steps"></ol>
+      <div class="row"><button id="walk-back" class="ghost">Back</button><button id="walk-stop" class="ghost danger">End</button><button id="walk-next" class="primary grow">Next step</button></div>
+    </div>
+    <div id="confirm" class="card attention" hidden>
+      <div class="card-title" id="confirm-title"></div>
+      <div id="confirm-text"></div>
+      <div class="row"><button id="confirm-no" class="ghost danger">Cancel</button><button id="confirm-yes" class="primary grow">Approve</button></div>
+      <div class="muted small" id="confirm-hint"></div>
+    </div>
+    <div id="attachments"></div>
+    <div id="modes" role="tablist">
+      <button data-mode="ask" class="on" title="Ask about what's on your screen">Ask</button>
+      <button data-mode="agent" title="Let Memo do it for you (with your approval)">Agent</button>
+      <button data-mode="dictate" title="Speak into the focused text field of any app">Dictate</button>
+    </div>
+    <form id="composer">
+      <button type="button" id="attach" class="icon" title="Attach files or PDFs">＋</button>
+      <input id="text" autocomplete="off" placeholder="Ask about your screen…">
+      <button type="button" id="mic" class="icon" title="Talk">●</button>
+      <button type="submit" id="send" class="primary">Send</button>
+    </form>
+    <div id="hint" class="muted small"></div>
+  </section>
+
+  <section id="tab-skills" class="tab">
+    <p class="muted">Skills are reusable instructions. Memo reads one when it's relevant, or pin one to apply it to everything.</p>
+    <div id="skill-list"></div>
+    <form id="skill-form" class="card">
+      <div class="card-title" id="skill-form-title">New skill</div>
+      <label>Name<input id="skill-name" required maxlength="60"></label>
+      <label>When to use it<input id="skill-desc" maxlength="200" placeholder="One line Memo uses to decide when this applies"></label>
+      <label>Instructions<textarea id="skill-body" rows="7" required></textarea></label>
+      <div class="row"><button type="button" id="skill-cancel" class="ghost">Clear</button><button type="submit" class="primary grow">Save skill</button></div>
+    </form>
+  </section>
+
+  <section id="tab-memory" class="tab">
+    <p class="muted">What Memo remembers about you across conversations. Say "remember that…" or add a note here.</p>
+    <form id="memory-form" class="row"><input id="memory-note" placeholder="e.g. I edit video in DaVinci Resolve" class="grow"><button class="primary">Add</button></form>
+    <div id="memory-list"></div>
+  </section>
+
+  <section id="tab-settings" class="tab">
+    <form id="settings-form">
+      <h3>Claude</h3>
+      <label>Anthropic API key<input id="set-key" type="password" autocomplete="off"></label>
+      <label>Model<select id="set-model"><option value="claude-opus-5-5">Claude Opus 5.5 (default)</option><option value="claude-fable-5-2">Claude Fable 5.2 (most capable)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5 (faster)</option><option value="claude-haiku-5-5">Claude Haiku 5.5 (fastest)</option></select></label>
+      <h3>Voice</h3>
+      <label>Speech recognition<select id="set-stt"><option value="local">On-device Whisper (no key, downloads a model once)</option><option value="cloud">Cloud (OpenAI-compatible endpoint)</option></select></label>
+      <div id="stt-cloud">
+        <label>Endpoint base URL<input id="set-stt-url"></label>
+        <label>Model<input id="set-stt-model"></label>
+        <label>API key<input id="set-stt-key" type="password" autocomplete="off"></label>
+      </div>
+      <label>Spoken language<select id="set-lang"></select></label>
+      <label class="check"><input type="checkbox" id="set-speak">Read answers aloud</label>
+      <label>Voice<select id="set-voice"></select></label>
+      <h3>Dictation</h3>
+      <label class="check"><input type="checkbox" id="set-polish">Fix grammar and punctuation before typing</label>
+      <label>Polish model<select id="set-dict-model"><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option><option value="claude-haiku-5-5">Claude Haiku 5.5 (fastest)</option></select></label>
+      <h3>Agent mode</h3>
+      <label class="check"><input type="checkbox" id="set-confirm-each">Ask before every single action (not only the plan)</label>
+      <h3>Hotkeys</h3>
+      <div id="hotkeys"></div>
+      <div class="row"><button class="primary grow">Save settings</button></div>
+      <div id="settings-note" class="muted small"></div>
+    </form>
+  </section>
+</main>
+<script src="panel.js"></script>
+</body>
+</html>

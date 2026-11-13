@@ -1,0 +1,22 @@
+{
+  "name": "memobros",
+  "productName": "MemoBrOS",
+  "version": "0.1.0",
+  "description": "MemoBrOS — a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "postinstall": "install-electron",
+    "start": "electron .",
+    "test": "xvfb-run -a -s \"-screen 0 1280x800x24\" node test/e2e.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@huggingface/transformers": "^4.3.2",
+    "@nut-tree-fork/nut-js": "^4.2.6"
+  },
+  "devDependencies": {
+    "electron": "^45.3.1"
+  }
+}
