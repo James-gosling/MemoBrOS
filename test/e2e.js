@@ -27,8 +27,8 @@ async function until(fn, what, ms = 15000) {
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ provider: 'anthropic' })); // this suite covers the Claude path; e2e-free.js covers the free providers
   const api = await fake.start();
   const app = await _electron.launch({
-    executablePath: require('electron'),
-    args: [root, '--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+    executablePath: process.env.MEMOBROS_BIN || require('electron'), // MEMOBROS_BIN: test a packaged build instead
+    args: [...(process.env.MEMOBROS_BIN ? [] : [root]), '--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
     env: { ...process.env, ANTHROPIC_BASE_URL: api.url, ANTHROPIC_API_KEY: 'test-key', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1', MEMOBROS_FAKE_TRANSCRIPT: 'hola mundo como estas' },
   });
   const results = [];

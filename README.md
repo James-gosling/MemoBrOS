@@ -2,7 +2,7 @@
 
 **Memo** (Guillermo's nickname) + **memo** (memory, notes) + **Bros / OS**. A desktop buddy that lives next to your cursor: it sees your screen, talks to you, points and draws on top of your apps, types what you say, walks you through software and, with your approval, does the task for you.
 
-A working prototype of the HeyClicky idea, built with Electron. It runs on free models through OpenRouter or a local OmniRoute gateway by default, so it can cost nothing to use; Claude is an optional paid provider. Runs on macOS, Windows and Linux (X11).
+A working prototype of the HeyClicky idea, built with Electron. It runs on free models through OpenRouter or a local OmniRoute gateway by default, so it can cost nothing to use; Claude is an optional paid provider. Configured and packaged for **Windows and Linux**.
 
 ## The five abilities
 
@@ -23,6 +23,8 @@ A working prototype of the HeyClicky idea, built with Electron. It runs on free 
 ### Web uploads and custom MCP servers
 
 - **Permissioned web uploads.** A background agent can pick a file from the folders you share (Documents, Downloads and Desktop by default; editable) and attach it to a web form. You approve each file and site once; files outside the shared folders are refused outright.
+- **One-click connectors.** Settings → Custom tools has presets for **Notion** (sign in through your browser), **GitHub** (paste a personal access token), **Google Workspace** (Gmail, Drive, Docs, Sheets, Slides, Calendar, Forms, Tasks, Chat through the open-source `workspace-mcp` server; needs `uv` and your own Google Cloud OAuth client), **Figma** (remote, or the desktop app's local server), **Claude Code** (`claude mcp serve`) and **ChatGPT via Codex** (`codex mcp-server`). Remote servers that require OAuth open their sign-in page in your browser and stay signed in afterwards.
+- **Your Google account as the key to web apps.** Under Routines → Connected accounts, sign in to Google once in Memo's private background browser. Background tasks and routines can then use Gmail, Drive, Docs, Sheets and Calendar on the web, and "Continue with Google" signs that browser in to third-party apps such as Figma, ChatGPT, Claude and Notion. Ask by voice ("check my Gmail for invoices") and Memo does it in the background and reports back.
 - **Custom MCP integration.** In Settings → Custom tools, connect a Model Context Protocol server by remote URL (with an optional token) or local command line. Its tools become available to voice requests and routines: "what did ACME buy last month?" can hit your database. Tools that change things ask first, with an "always allow" choice.
 
 And the *Memo* in the name: say "remember that…" and it keeps the note across conversations (Memory tab).
@@ -41,7 +43,17 @@ npm start
 2. Speech recognition defaults to on-device Whisper, which downloads a model from huggingface.co on first use. To use a cloud service instead, pick "Cloud" and enter any OpenAI-compatible transcription endpoint and key.
 3. You can also type instead of talking; everything works from the panel's text box.
 
-Permissions the OS will ask for: **microphone**, plus on macOS **Screen Recording** (to see the screen) and **Accessibility** (agent mode and dictation typing). On Linux, a compositor is needed for the transparent overlay.
+### Windows and Linux
+
+| | Windows 10/11 | Linux |
+|---|---|---|
+| Installer | `npm run dist:win` → NSIS installer in `dist/` | `npm run dist:linux` → AppImage and `.deb` in `dist/` |
+| Hotkeys | `Ctrl+Alt+…` | `Ctrl+Alt+…` |
+| Display server | — | X11. On Wayland sessions the app runs through XWayland, where the agent can only see and control X11 apps |
+| Needs | microphone permission | a compositor (for the transparent overlay), `libxtst6`; a notification daemon for routine alerts |
+| Start with the system | Settings → System (installed builds) | Settings → System (writes `~/.config/autostart/memobros.desktop`) |
+
+Build each installer on its own platform: `npm install` fetches the speech-recognition runtime for the machine it runs on, so a Windows installer built on Linux would ship without on-device Whisper.
 
 All hotkeys, the model, voice, language and agent caution level ("ask before every single action") are editable in Settings.
 
@@ -82,9 +94,11 @@ Launches the real app on a virtual display against a scripted stand-in for the m
 - Not yet exercised against live OpenRouter, OmniRoute or Anthropic endpoints, or with a real microphone and Whisper model; those paths are covered only through the scripted APIs and a fake audio device. In particular the default model id `openrouter/free` and OpenRouter's PDF handling are unverified.
 - Routines only run while MemoBrOS is open. A run missed by less than a day fires at the next start; older ones are skipped.
 - The background browser reads pages as text and numbered controls, so heavily scripted sites may not work; the "submit" guardrail recognises standard HTML forms, not every custom button.
-- Only developed and run on Linux. The macOS and Windows code paths (coordinate scaling, permissions, content protection) are written but untested.
+- Only developed and run on Linux, where the AppImage and `.deb` build and the packaged app passes the test suites. The Windows configuration and code paths are written but have not been run on Windows.
+- None of the real connectors (Notion, GitHub, Google Workspace, Figma, Claude Code, Codex) has been connected from here; the OAuth sign-in flow is tested against a local stand-in server. Figma's remote server may refuse apps it has not approved. Google can refuse sign-in inside embedded browsers; the background browser presents itself as plain Chrome to avoid that, without a guarantee.
+- Antigravity has no MCP server or web app to connect to; it is a desktop IDE, so Memo reaches it only through on-screen agent mode.
 - Hotkeys toggle listening rather than push-to-talk, and dictation types phrase by phrase at each pause rather than word by word.
-- One display at a time (the one your cursor is on). No installer or code signing yet.
+- One display at a time (the one your cursor is on). Installers are unsigned.
 
 ## Credits
 

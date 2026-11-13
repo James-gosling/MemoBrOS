@@ -21,6 +21,7 @@ const DEFAULTS = {
   language: 'auto', // ISO code (es, en, fr, ...) or auto
   dictationPolish: true,
   confirmEachAction: false,
+  launchAtLogin: false, // start hidden with the system so routines keep running
   speak: true,
   voice: '',
   speechRate: 1.05,

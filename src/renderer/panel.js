@@ -285,6 +285,27 @@ $('routine-new').addEventListener('submit', async (e) => {
 $('web-connect').addEventListener('submit', (e) => { e.preventDefault(); call('web:connect', { url: $('web-url').value.trim() }); });
 $('folder-add').addEventListener('click', async () => { S = await call('folders:pick'); renderRoutines(); });
 
+// Sites to sign in to in the background browser. Google first: its session unlocks Workspace and "Continue with Google" elsewhere.
+const ACCOUNTS = [['Google account', 'accounts.google.com'], ['Gmail', 'mail.google.com'], ['Drive', 'drive.google.com'], ['Docs', 'docs.google.com'], ['Sheets', 'sheets.google.com'], ['Calendar', 'calendar.google.com'],
+  ['Notion', 'www.notion.so/login'], ['GitHub', 'github.com/login'], ['Figma', 'www.figma.com/login'], ['ChatGPT', 'chatgpt.com'], ['Claude', 'claude.ai/login']];
+$('account-links').replaceChildren(...ACCOUNTS.map(([name, url]) => h('button', { type: 'button', textContent: name, onclick: () => call('web:connect', { url }) })));
+
+// Ready-made MCP connectors. Clicking one fills the form below; "note" says what the service still needs from you.
+const MCP_PRESETS = [
+  { name: 'Notion', type: 'http', url: 'https://mcp.notion.com/mcp', note: 'Press Connect, then approve MemoBrOS in the Notion page that opens in your browser.' },
+  { name: 'GitHub', type: 'http', url: 'https://api.githubcopilot.com/mcp/', needsToken: true, note: 'Paste a GitHub personal access token (github.com/settings/tokens) as the access token, then Connect.' },
+  { name: 'Google Workspace', type: 'stdio', command: 'uvx workspace-mcp --tool-tier core', env: 'GOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=', note: 'Gmail, Drive, Docs, Sheets, Slides, Calendar, Forms, Tasks and Chat. Needs "uv" installed and a Google Cloud OAuth client (Desktop app): fill in its ID and secret. Google sign-in opens on first use.' },
+  { name: 'Figma', type: 'http', url: 'https://mcp.figma.com/mcp', note: 'Press Connect and sign in to Figma in your browser. If Figma refuses the app, use "Figma desktop" instead.' },
+  { name: 'Figma desktop', type: 'http', url: 'http://127.0.0.1:3845/mcp', note: 'Needs the Figma desktop app open with its MCP server enabled (Dev Mode → MCP).' },
+  { name: 'Claude Code', type: 'stdio', command: 'claude mcp serve', note: 'Lets Memo hand work to Claude Code. Needs the "claude" CLI installed and signed in.' },
+  { name: 'ChatGPT (Codex)', type: 'stdio', command: 'codex mcp-server', note: 'Lets Memo hand work to OpenAI\'s Codex agent with your ChatGPT sign-in. Needs the "codex" CLI installed and signed in.' },
+];
+$('mcp-presets').replaceChildren(...MCP_PRESETS.map((p) => h('button', { type: 'button', textContent: p.name, onclick: () => {
+  $('mcp-name').value = p.name; $('mcp-type').value = p.type; $('mcp-command').value = p.command || ''; $('mcp-url').value = p.url || ''; $('mcp-env').value = p.env || ''; $('mcp-token').value = '';
+  showMcpKind(); $('mcp-note').textContent = p.note;
+  $('mcp-form').scrollIntoView({ behavior: 'smooth' }); (p.needsToken ? $('mcp-token') : p.env ? $('mcp-env') : $('mcp-name')).focus();
+} })));
+
 // ---- custom MCP servers -----------------------------------------------------------------
 function renderMcp() {
   $('mcp-list').replaceChildren(...S.settings.mcpServers.map((c) => {
@@ -294,20 +315,20 @@ function renderMcp() {
       h('span', { className: 'meta', textContent: c.type === 'http' ? c.url : c.command }),
       h('span', { className: `meta ${st.status === 'connected' ? 'ok' : st.status === 'error' ? 'bad' : ''}`, textContent: line })),
     h('div', { className: 'btns' },
-      h('button', { textContent: 'Retry', onclick: async () => { S = await call('mcp:reconnect'); renderMcp(); } }),
+      h('button', { textContent: st.status === 'error' && /sign.?in/i.test(st.error) ? 'Sign in' : 'Retry', onclick: async () => { S = await call('mcp:reconnect', { id: c.id }); renderMcp(); } }),
       h('button', { textContent: 'Remove', className: 'danger', onclick: async () => { S = await call('mcp:delete', { id: c.id }); renderMcp(); } })));
   }));
 }
 function showMcpKind() {
   const http = $('mcp-type').value === 'http';
-  $('mcp-command-row').hidden = http; $('mcp-url-row').hidden = !http; $('mcp-token-row').hidden = !http;
+  $('mcp-command-row').hidden = http; $('mcp-env-row').hidden = http; $('mcp-url-row').hidden = !http; $('mcp-token-row').hidden = !http;
 }
 $('mcp-type').addEventListener('change', showMcpKind);
 $('mcp-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  $('mcp-note').textContent = 'Connecting…';
+  $('mcp-note').textContent = 'Connecting… (if a sign-in page opens in your browser, finish it there)';
   try {
-    const payload = { server: { name: $('mcp-name').value, type: $('mcp-type').value, command: $('mcp-command').value, url: $('mcp-url').value, trust: $('mcp-trust').value } };
+    const payload = { server: { name: $('mcp-name').value, type: $('mcp-type').value, command: $('mcp-command').value, env: $('mcp-env').value, url: $('mcp-url').value, trust: $('mcp-trust').value } };
     if ($('mcp-token').value) payload.token = $('mcp-token').value;
     S = await call('mcp:save', payload);
     $('mcp-form').reset(); showMcpKind(); $('mcp-note').textContent = ''; renderMcp();
@@ -337,6 +358,7 @@ function renderSettings() {
   $('stt-cloud').hidden = s.sttProvider !== 'cloud';
   $('set-lang').replaceChildren(...Object.entries(LANGS).map(([value, textContent]) => h('option', { value, textContent })));
   $('set-lang').value = s.language;
+  $('set-autostart').checked = !!s.launchAtLogin;
   $('set-speak').checked = s.speak; $('set-polish').checked = s.dictationPolish; $('set-confirm-each').checked = s.confirmEachAction;
   fillVoices();
   $('hotkeys').replaceChildren(...Object.entries(HOTKEY_LABELS).map(([k, label]) => h('div', { className: 'hk' }, label, h('input', { value: s.hotkeys[k], id: `hk-${k}` }))));
@@ -369,6 +391,7 @@ $('settings-form').addEventListener('submit', async (e) => {
       providers: { openrouter: { model: $('set-or-model').value.trim() || 'openrouter/free' }, omniroute: { baseUrl: $('set-omni-url').value.trim() || 'http://localhost:20128/v1', model: $('set-omni-model').value.trim() || 'auto' } },
       model: $('set-model').value, dictationModel: $('set-dict-model').value, sttProvider: $('set-stt').value,
       sttBaseUrl: $('set-stt-url').value.trim(), sttCloudModel: $('set-stt-model').value.trim(), language: $('set-lang').value,
+      launchAtLogin: $('set-autostart').checked,
       speak: $('set-speak').checked, voice: $('set-voice').value, dictationPolish: $('set-polish').checked, confirmEachAction: $('set-confirm-each').checked,
       hotkeys: Object.fromEntries(Object.keys(HOTKEY_LABELS).map((k) => [k, $(`hk-${k}`).value.trim()])),
     },

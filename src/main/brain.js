@@ -61,6 +61,7 @@ const ROUTINE_PROPS = {
   needs_screen: { type: 'boolean', description: 'true only if the task has to operate desktop apps with the mouse and keyboard; false when background tools (web browser, connected MCP tools) are enough' },
 };
 const CREATE_ROUTINE = tool('create_routine', 'Schedule a task to run automatically, repeating or once, in the background.', ROUTINE_PROPS, ['name', 'task', 'schedule_text']);
+const RUN_IN_BACKGROUND = tool('run_in_background', 'Do a task quietly in the background, without touching the user\'s screen: it uses a private browser signed in to the accounts the user connected (Google Workspace, Notion, GitHub, Figma, ChatGPT, Claude and other sites) and their connected tools. Good for looking things up or doing web tasks while they keep working. The result arrives later as a notification.', { task: { type: 'string', description: 'Complete, self-contained instructions' } });
 const START_AGENT = tool('start_agent', 'Hand a task to agent mode, which operates the mouse and keyboard after the user approves the plan.', { task: { type: 'string' } });
 
 // ---- attachments ------------------------------------------------------------
@@ -119,10 +120,11 @@ async function ask({ text, shot, attachments, pinnedSkill, hooks, signal }) {
   const reply = await turn({
     system: systemPrompt(shot, pinnedSkill),
     content: [...attachmentBlocks(attachments), shotBlock(shot), { type: 'text', text }],
-    tools: [POINT, DRAW, START_WALKTHROUGH, START_AGENT, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
+    tools: [POINT, DRAW, START_WALKTHROUGH, START_AGENT, RUN_IN_BACKGROUND, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
     handlers: {
       ...baseHandlers(hooks),
       create_routine: (i) => hooks.createRoutine(i),
+      run_in_background: (i) => hooks.runBackground(i.task),
       __other: (name, input) => hooks.callTool(name, input),
       start_walkthrough: async (i) => { hooks.startWalkthrough(i); return 'Walkthrough queued. The app will start step 1 right after you finish speaking; just give a one-sentence intro now.'; },
       start_agent: async (i) => { hooks.startAgent(i.task); return 'Agent mode queued; the user will see your plan and approve it. Say one short sentence acknowledging.'; },

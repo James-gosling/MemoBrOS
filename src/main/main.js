@@ -5,6 +5,13 @@ const { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, d
 
 if (process.env.MEMOBROS_USER_DATA) app.setPath('userData', process.env.MEMOBROS_USER_DATA);
 
+// Platform setup. Linux: run through X11 (XWayland on Wayland sessions), which the always-on-top overlay,
+// global hotkeys and synthetic input need. Windows: an app id so notifications and the taskbar group correctly.
+if (process.platform === 'linux') app.commandLine.appendSwitch('ozone-platform', 'x11');
+if (process.platform === 'win32') app.setAppUserModelId('com.memobros.app');
+const startHidden = process.argv.includes('--hidden'); // used by "start with the system"
+
+
 const store = require('./store');
 const shots = require('./screen');
 const input = require('./input');
@@ -71,23 +78,11 @@ function createPanel() {
   });
   panel.loadFile(path.join(__dirname, '..', 'renderer', 'panel.html'));
   panel.on('close', (e) => { if (!app.isQuitting) { e.preventDefault(); panel.hide(); } });
-  panel.once('ready-to-show', () => panel.show());
+  panel.once('ready-to-show', () => { if (!startHidden) panel.show(); });
 }
 const togglePanel = () => (panel.isVisible() ? panel.hide() : panel.show());
 
-// A little sticky-note icon, drawn in code so the repo ships no binary assets.
-function icon(size) {
-  const buf = Buffer.alloc(size * size * 4);
-  const px = (x, y, r, g, b, a = 255) => { const o = (y * size + x) * 4; buf[o] = b; buf[o + 1] = g; buf[o + 2] = r; buf[o + 3] = a; };
-  const m = Math.round(size * 0.12), fold = Math.round(size * 0.28);
-  for (let y = m; y < size - m; y++) for (let x = m; x < size - m; x++) {
-    const inFold = (size - m - x) + (size - m - y) < fold;
-    if (inFold) continue;
-    const eye = (cx) => Math.hypot(x - cx * size, y - 0.45 * size) < size * 0.07;
-    if (eye(0.38) || eye(0.62)) px(x, y, 40, 30, 20); else px(x, y, 255, 205, 60);
-  }
-  return nativeImage.createFromBitmap(buf, { width: size, height: size });
-}
+const icon = (size) => nativeImage.createFromPath(path.join(__dirname, '..', '..', 'assets', 'icon.png')).resize({ width: size, height: size, quality: 'best' });
 
 function createTray() {
   try {
@@ -182,6 +177,10 @@ function doAsk(text) {
         startWalkthrough: (w) => { next = () => startWalkthrough(w); },
         startAgent: (t) => { next = () => doAgent(t, true); },
         createRoutine: (draft) => describeRoutine(routines.add(draft)),
+        runBackground: (t) => {
+          setImmediate(() => routines.runOnce(t).catch((e) => toPanel({ type: 'message', role: 'error', text: e.message })));
+          return 'Started in the background. The user will get the result as a notification and in the panel. Tell them that in one short sentence.';
+        },
         extraTools: mcp.forModel(),
         callTool: (name, args) => { toPanel({ type: 'message', role: 'action', text: `Using ${name.replace(/^mcp__/, '').replace('__', ' → ')}` }); return routines.mcpWithApproval(name, args, 'Memo'); },
       },
@@ -376,6 +375,22 @@ function route(text, mode) {
   return doAsk(text);
 }
 
+// ---- start with the system (so routines keep running) -----------------------------------------
+function applyAutostart() {
+  const on = !!store.getSettings().launchAtLogin;
+  try {
+    if (process.platform === 'linux') {
+      const file = path.join(app.getPath('home'), '.config', 'autostart', 'memobros.desktop');
+      if (!on) { fs.rmSync(file, { force: true }); return; }
+      const exec = process.env.APPIMAGE || (app.isPackaged ? process.execPath : `${process.execPath}" "${app.getAppPath()}`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=MemoBrOS\nComment=Screen-aware AI buddy\nExec="${exec}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
+    } else if (app.isPackaged || on === false) {
+      app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] });
+    }
+  } catch (e) { console.warn('autostart:', e.message); }
+}
+
 // ---- IPC ---------------------------------------------------------------------------------
 function state() {
   const s = store.getSettings();
@@ -397,6 +412,7 @@ const handlers = {
     if (anthropicKey !== undefined) store.setSecret('anthropic', anthropicKey.trim());
     if (sttKey !== undefined) store.setSecret('stt', sttKey.trim());
     const failed = registerHotkeys();
+    applyAutostart();
     return { ...state(), failedHotkeys: failed };
   },
   request: ({ text, mode }) => { route(text, mode); },
@@ -459,11 +475,12 @@ const handlers = {
     const old = all.find((c) => c.id === id);
     store.saveSettings({ mcpServers: old ? all.map((c) => (c.id === id ? { ...old, ...clean } : c)) : [...all, { ...clean, allowedTools: [] }] });
     if (token !== undefined) store.setSecret(`mcp:${id}`, token.trim());
-    await mcp.sync();
+    if (server.env !== undefined) store.setSecret(`mcpenv:${id}`, String(server.env).trim());
+    await mcp.sync(id, true); // user-initiated: may open the browser to sign in
     return state();
   },
-  'mcp:delete': async ({ id }) => { store.saveSettings({ mcpServers: store.getSettings().mcpServers.filter((c) => c.id !== id) }); store.setSecret(`mcp:${id}`, ''); await mcp.sync(); return state(); },
-  'mcp:reconnect': async () => { await mcp.sync(true); return state(); },
+  'mcp:delete': async ({ id }) => { store.saveSettings({ mcpServers: store.getSettings().mcpServers.filter((c) => c.id !== id) }); store.setSecret(`mcp:${id}`, ''); store.setSecret(`mcpenv:${id}`, ''); store.setSecret(`mcpauth:${id}`, ''); await mcp.sync(); return state(); },
+  'mcp:reconnect': async ({ id }) => { await mcp.sync(id || true, true); return state(); },
   // connected accounts + shared folders for background agents
   'web:connect': ({ url }) => { web.showForLogin(url); },
   'folders:pick': async () => {
@@ -493,7 +510,8 @@ else {
       confirm, notify, changed: pushState,
       // A due desktop routine waits for the user's own request to finish, then asks before taking the screen.
       runDesktop: async (r) => { while (task) await input.sleep(2000); return doAgent(r.task, false, { routine: r }); },
-      announce: (r, entry) => {
+      announce: (r, entry, speak) => {
+        if (speak && entry.status === 'ok') toPanel({ type: 'say', text: entry.summary });
         notify(`Routine "${r.name}" ${{ ok: 'finished', error: 'failed', stopped: 'was stopped', skipped: 'was skipped' }[entry.status] || entry.status}`, entry.summary);
         if (!r.desktop) toPanel({ type: 'message', role: entry.status === 'error' ? 'error' : 'memo', text: entry.summary, tag: `Routine · ${r.name}` });
       },

@@ -3,7 +3,7 @@ const SVG = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
 const ink = $('ink'), buddy = $('buddy'), label = $('label'), badge = $('badge'), caption = $('caption');
 
-const HOME = { x: 18, y: 20 };            // where the buddy sits relative to the real cursor
+const HOME = { x: 14, y: 16 };            // where the buddy sits relative to the real cursor
 let mouse = { x: innerWidth / 2, y: innerHeight / 2 };
 let pos = { ...mouse };
 let flight = null;                        // { from, to, ctrl, t0, dur } — bezier flight to a pointed target
@@ -42,7 +42,7 @@ function frame(now) {
   buddy.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
   // Caption floats next to the buddy, flipped when it would leave the screen.
   const cw = caption.offsetWidth, ch = caption.offsetHeight;
-  let cx = pos.x + 56, cy = pos.y + 44;
+  let cx = pos.x + 62, cy = pos.y + 56;
   if (cx + cw > innerWidth - 8) cx = pos.x - cw - 10;
   if (cy + ch > innerHeight - 8) cy = pos.y - ch - 10;
   caption.style.transform = `translate(${Math.max(8, cx)}px, ${Math.max(8, cy)}px)`;
@@ -65,8 +65,7 @@ function pathFor(s) {
   if (s.type === 'circle') {
     const cx = (x + (s.x2 ?? x)) / 2, cy = (y + (s.y2 ?? y)) / 2;
     const rx = s.x2 == null ? 28 : Math.abs(x2 - x) / 2 + 8, ry = s.y2 == null ? 28 : Math.abs(y2 - y) / 2 + 8;
-    // slightly open, hand-drawn looking ellipse
-    return { d: `M ${cx + rx} ${cy - 4} A ${rx} ${ry} 0 1 1 ${cx + rx * 0.985} ${cy + ry * 0.17}`, labelAt: { x: cx - rx, y: cy - ry - 8 } };
+    return { d: `M ${cx + rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx - rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx + rx} ${cy}`, labelAt: { x: cx - rx, y: cy - ry - 8 } };
   }
   if (s.type === 'box') {
     const l = Math.min(x, x2) - 5, t = Math.min(y, y2) - 5, r = Math.max(x, x2) + 5, b = Math.max(y, y2) + 5;

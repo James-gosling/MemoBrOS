@@ -56,9 +56,37 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
     });
   });
 
+  // A remote MCP server that requires OAuth sign-in (the way Notion's and Figma's do).
+  const oauthLog = [];
+  const oauth = await listen((req, res) => {
+    const base = `http://${req.headers.host}`;
+    const u = new URL(req.url, base);
+    let b = '';
+    req.on('data', (c) => { b += c; });
+    req.on('end', () => {
+      const json = (code, obj, headers = {}) => { res.writeHead(code, { 'content-type': 'application/json', ...headers }); res.end(JSON.stringify(obj)); };
+      oauthLog.push(`${req.method} ${u.pathname}`);
+      if (u.pathname.startsWith('/.well-known/oauth-protected-resource')) return json(200, { resource: `${base}/mcp`, authorization_servers: [base] });
+      if (u.pathname.startsWith('/.well-known/oauth-authorization-server')) return json(200, { issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`, response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'] });
+      if (u.pathname === '/register') return json(201, { ...JSON.parse(b), client_id: 'client-1' });
+      if (u.pathname === '/authorize') { res.writeHead(302, { location: `${u.searchParams.get('redirect_uri')}?code=code-1&state=${u.searchParams.get('state') || ''}` }); return res.end(); }
+      if (u.pathname === '/token') return json(200, { access_token: 'access-1', token_type: 'Bearer', expires_in: 3600, refresh_token: 'refresh-1' });
+      if (u.pathname === '/mcp' && req.method === 'POST') {
+        if (req.headers.authorization !== 'Bearer access-1') return json(401, { error: 'unauthorized' }, { 'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource"` });
+        const msg = JSON.parse(b);
+        if (msg.id === undefined) { res.writeHead(202); return res.end(); }
+        const result = msg.method === 'initialize' ? { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'workspace', version: '1' } }
+          : msg.method === 'tools/list' ? { tools: [{ name: 'search_pages', description: 'Search the workspace', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, annotations: { readOnlyHint: true } }] }
+            : { content: [{ type: 'text', text: 'Found: Q4 roadmap' }] };
+        return json(200, { jsonrpc: '2.0', id: msg.id, result });
+      }
+      res.writeHead(404); res.end();
+    });
+  });
+
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
   const app = await _electron.launch({
-    executablePath: require('electron'), args: [root, '--no-sandbox'],
+    executablePath: process.env.MEMOBROS_BIN || require('electron'), args: [...(process.env.MEMOBROS_BIN ? [] : [root]), '--no-sandbox'],
     env: { ...process.env, OPENROUTER_API_KEY: 'or-test-key', ANTHROPIC_API_KEY: '', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1' },
   });
   const results = [];
@@ -167,7 +195,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
     });
 
     await check('custom MCP: local command + remote URL connect; read-only tool runs by voice, changing tool asks first', async () => {
-      let st = await invoke('mcp:save', { server: { name: 'Sales DB', type: 'stdio', command: `node "${path.join(__dirname, 'fixtures', 'mcp-stdio.js')}" "${marker}"` } });
+      let st = await invoke('mcp:save', { server: { name: 'Sales DB', type: 'stdio', command: `node "${path.join(__dirname, 'fixtures', 'mcp-stdio.js')}" "${marker}"`, env: 'MEMO_FIXTURE_ENV=from-settings' } });
       st = await invoke('mcp:save', { server: { name: 'Weather', type: 'http', url: `${remote.url}/mcp` }, token: 'tok-123' });
       const [db, weather] = st.mcp;
       assert.equal(db.status, 'connected', db.error); assert.deepEqual(db.tools, ['query_db', 'delete_row']);
@@ -180,7 +208,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       await until(async () => (await lastMemo()).includes('ACME bought 1234'), 'answer from tool data');
       assert.ok(api.state.requests[0].body.tools.some((t) => t.function.name === 'mcp__sales_db__delete_row'));
       const toolMsgs = api.state.requests[1].body.messages.filter((m) => m.role === 'tool').map((m) => m.content);
-      assert.match(toolMsgs[0], /"customer":"ACME"/); assert.match(toolMsgs[1], /Sunny in CDMX/);
+      assert.match(toolMsgs[0], /"customer":"ACME"/); assert.match(toolMsgs[0], /env=from-settings/, 'per-server environment reaches a local MCP server'); assert.match(toolMsgs[1], /Sunny in CDMX/);
 
       api.state.script = [() => [use('mcp__sales_db__delete_row', { id: 7 })], () => [text('Okay, left it alone.')]];
       await send('ask', 'delete row 7');
@@ -202,6 +230,50 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       await send('ask', 'and row 8');
       await until(async () => (await lastMemo()).includes('Deleted 8.'), '"always allow" skips the card next time');
       assert.equal(fs.readFileSync(marker, 'utf8'), 'deleted 7\ndeleted 8\n');
+    });
+
+    await check('connectors: a remote MCP server that needs browser sign-in (OAuth) connects and stays signed in', async () => {
+      let st = await invoke('mcp:save', { server: { name: 'Workspace', type: 'http', url: `${oauth.url}/mcp` } });
+      const ws = st.mcp.find((m) => m.id === st.settings.mcpServers.find((c) => c.name === 'Workspace').id);
+      assert.equal(ws.status, 'connected', ws.error); assert.deepEqual(ws.tools, ['search_pages']);
+      for (const step of ['POST /register', 'GET /authorize', 'POST /token']) assert.ok(oauthLog.includes(step), `OAuth step ${step}`);
+      const secrets = fs.readFileSync(path.join(userData, 'secrets.json'), 'utf8');
+      assert.ok(/mcpauth:/.test(secrets), 'tokens kept with the secrets'); assert.ok(!fs.readFileSync(path.join(userData, 'settings.json'), 'utf8').includes('access-1'));
+      api.state.script = [() => [use('mcp__workspace__search_pages', { q: 'roadmap' })], () => [text('It is the Q4 roadmap.')]];
+      await send('ask', 'find the roadmap page');
+      await until(async () => (await lastMemo()).includes('Q4 roadmap'), 'answer from the signed-in server');
+      oauthLog.length = 0;
+      st = await invoke('mcp:reconnect', {}); // reconnecting reuses the saved token: no new sign-in
+      assert.equal(st.mcp.find((m) => m.id === ws.id).status, 'connected');
+      assert.ok(!oauthLog.includes('GET /authorize'), 'no second sign-in');
+      // presets and account shortcuts are offered in the UI
+      await panel.click('#tabs [data-tab="settings"]');
+      assert.deepEqual(await panel.locator('#mcp-presets button').allInnerTexts(), ['Notion', 'GitHub', 'Google Workspace', 'Figma', 'Figma desktop', 'Claude Code', 'ChatGPT (Codex)']);
+      await panel.click('#mcp-presets button:text-is("Google Workspace")');
+      assert.equal(await panel.locator('#mcp-command').inputValue(), 'uvx workspace-mcp --tool-tier core');
+      assert.match(await panel.locator('#mcp-env').inputValue(), /GOOGLE_OAUTH_CLIENT_ID=/);
+      await panel.click('#mcp-presets button:text-is("Notion")');
+      assert.equal(await panel.locator('#mcp-url').inputValue(), 'https://mcp.notion.com/mcp');
+      await panel.locator('#mcp-form').screenshot({ path: path.join(out, 'panel-connectors.png') });
+      await panel.click('#tabs [data-tab="routines"]');
+      assert.ok((await panel.locator('#account-links button').allInnerTexts()).includes('Google account'));
+    });
+
+    await check('background task by voice: runs in the hidden browser, reports back, screen untouched', async () => {
+      api.state.script = [
+        () => [use('run_in_background', { task: `Open ${site.url}/ and tell me the page title` })],
+        () => [text('On it, I will let you know.')],
+        () => [use('browser_open', { url: `${site.url}/` })],
+        () => [text('The page is titled Expenses.')],
+      ];
+      await send('ask', 'check the expenses site for me');
+      await until(async () => (await lastMemo()).includes('titled Expenses'), 'background report in the panel');
+      assert.ok(api.state.requests[0].body.tools.some((t) => t.function.name === 'run_in_background'));
+      assert.ok(!JSON.stringify(api.state.requests[2].body).includes('image_url'));
+      const ua = await main(() => global.__memo.web.window.webContents.getUserAgent());
+      assert.ok(/Chrome\//.test(ua) && !/Electron|memobros/i.test(ua), `background browser presents as plain Chrome (${ua})`);
+      assert.ok(await overlay.evaluate(() => { const i = document.querySelector('#buddy img'); return i.complete && i.naturalWidth === 256; }), 'custom cursor image is shown');
+      await overlay.screenshot({ path: path.join(out, 'overlay-cursor.png') });
     });
 
     let expenseId;
@@ -293,7 +365,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       const r = (await routinesNow()).find((x) => x.id === id);
       assert.equal(r.lastRun.summary, 'Hi! Nothing needs your attention.'); assert.equal(r.enabled, false); assert.equal(r.nextRun, null);
       const disk = JSON.parse(fs.readFileSync(path.join(userData, 'routines.json'), 'utf8'));
-      assert.equal(disk.length, 4); assert.ok(disk.find((x) => x.id === expenseId).allowed.some((k) => k.startsWith('submit:')));
+      assert.equal(disk.length, 4, 'one-off background tasks are not saved as routines'); assert.ok(disk.find((x) => x.id === expenseId).allowed.some((k) => k.startsWith('submit:')));
       const paused = await invoke('routine:toggle', { id: expenseId, enabled: false });
       assert.equal(paused.routines.find((x) => x.id === expenseId).nextRun, null);
     });
@@ -311,7 +383,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
   } finally {
     await app.evaluate(({ app: a }) => { a.isQuitting = true; a.quit(); }).catch(() => {});
     await app.close().catch(() => {});
-    api.close(); site.server.close(); remote.server.close();
+    api.close(); site.server.close(); remote.server.close(); oauth.server.close();
   }
   const failed = results.filter((r) => r[1] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passed`);

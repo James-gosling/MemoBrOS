@@ -11,7 +11,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function ensure() {
   if (win && !win.isDestroyed()) return win;
-  session.fromPartition(PARTITION).setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  const ses = session.fromPartition(PARTITION);
+  ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  // Present as plain Chrome: several sign-in pages (Google among them) turn away browsers that announce an embedded shell.
+  ses.setUserAgent(ses.getUserAgent().replace(/\s(?:memobros|MemoBrOS|Electron)\/\S+/g, ''));
   win = new BrowserWindow({ show: false, width: 1280, height: 900, title: 'MemoBrOS connected accounts', autoHideMenuBar: true, webPreferences: { partition: PARTITION, sandbox: true } });
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) win.loadURL(url); return { action: 'deny' }; });
   win.on('close', (e) => { if (win.isVisible()) { e.preventDefault(); win.hide(); } }); // closing the sign-in window keeps the session

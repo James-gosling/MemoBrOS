@@ -1,15 +1,18 @@
 {
   "name": "memobros",
   "productName": "MemoBrOS",
-  "version": "0.1.0",
-  "description": "MemoBrOS — a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
+  "version": "0.3.0",
+  "description": "MemoBrOS \u2014 a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",
   "private": true,
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "test": "xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js'"
+    "test": "xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js'",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "pack": "electron-builder --dir"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
@@ -18,6 +21,76 @@
     "@nut-tree-fork/nut-js": "^4.2.6"
   },
   "devDependencies": {
-    "electron": "^45.3.1"
-  }
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0"
+  },
+  "author": "MemoBrOS",
+  "homepage": "https://github.com/James-gosling/MemoBrOS",
+  "build": {
+    "appId": "com.memobros.app",
+    "productName": "MemoBrOS",
+    "files": [
+      "src/**",
+      "skills/**",
+      "assets/**",
+      "package.json",
+      "!node_modules/onnxruntime-node/bin/**/darwin/**",
+      "!**/libonnxruntime_providers_cuda.so",
+      "!**/libonnxruntime_providers_tensorrt.so"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/@nut-tree-fork/**",
+      "node_modules/sharp/**",
+      "node_modules/@img/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "icon": "assets/icon.png",
+      "maintainer": "MemoBrOS",
+      "synopsis": "Screen-aware AI desktop buddy",
+      "desktop": {
+        "entry": {
+          "Name": "MemoBrOS",
+          "StartupWMClass": "MemoBrOS"
+        }
+      }
+    },
+    "deb": {
+      "depends": [
+        "libxtst6",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libatspi2.0-0",
+        "libsecret-1-0"
+      ]
+    }
+  },
+  "desktopName": "memobros.desktop"
 }

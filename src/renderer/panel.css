@@ -78,3 +78,6 @@ body.dragging { outline: 3px dashed var(--memo); outline-offset: -6px; }
 .item .btns { display: flex; flex-direction: column; gap: 4px; flex: none; }
 #routine-list, #mcp-list, #folder-list { display: flex; flex-direction: column; gap: 6px; }
 nav button { font-size: 13px; }
+.links { display: flex; flex-wrap: wrap; gap: 6px; }
+.links button { padding: 4px 10px; font-size: 12px; border-radius: 999px; }
+.brand img { display: block; }

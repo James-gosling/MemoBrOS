@@ -11,27 +11,21 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @keyframes draw { to { stroke-dashoffset: 0; } }
 @keyframes pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
-#buddy { position: fixed; left: 0; top: 0; width: 44px; height: 44px; will-change: transform; filter: drop-shadow(0 3px 6px rgba(0,0,0,.35)); }
-#buddy .note { position: absolute; inset: 0; transition: transform .2s; }
-#buddy .body { fill: var(--memo); stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
-#buddy .fold { fill: #e0a800; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
-#buddy .tip { fill: var(--ink); }
-#buddy .eye { fill: var(--ink); }
-#buddy .mouth { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; }
-#buddy.pointing .note { transform: scale(1.25); transform-origin: 2px 2px; }
-#buddy .ring { position: absolute; left: 4px; top: 4px; width: 42px; height: 42px; border-radius: 50%; border: 3px solid transparent; pointer-events: none; }
+#buddy { position: fixed; left: 0; top: 0; width: 54px; height: 54px; will-change: transform; filter: drop-shadow(0 3px 6px rgba(0,0,0,.45)); }
+#buddy .note { position: absolute; left: 0; top: 0; width: 54px; height: 54px; transition: transform .2s; transform-origin: 0 0; }
+#buddy.pointing .note { transform: scale(1.25); }
+#buddy .ring { position: absolute; left: 10px; top: 10px; width: 34px; height: 34px; border-radius: 50%; border: 3px solid transparent; pointer-events: none; }
 #buddy[data-status="listening"] .ring, #buddy[data-status="dictating"] .ring { border-color: #35c46a; animation: pulse 1s ease-in-out infinite; }
-#buddy[data-status="thinking"] .ring { border-color: var(--memo) transparent var(--memo) transparent; animation: spin .9s linear infinite; }
+#buddy[data-status="thinking"] .ring { border-color: #6fe3ff transparent #6fe3ff transparent; animation: spin .9s linear infinite; }
 #buddy[data-status="acting"] .ring { border-color: var(--mark); animation: pulse .7s ease-in-out infinite; }
-#buddy[data-status="thinking"] .eye { animation: blink 1.2s infinite; }
-@keyframes pulse { 0%,100% { transform: scale(.9); opacity: .9; } 50% { transform: scale(1.35); opacity: .25; } }
+#buddy[data-status="thinking"] .note { animation: glow 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { transform: scale(.9); opacity: .9; } 50% { transform: scale(1.5); opacity: .25; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes blink { 0%,40%,100% { transform: scaleY(1); } 45%,55% { transform: scaleY(.1); } }
-#buddy .eye { transform-origin: center; transform-box: fill-box; }
+@keyframes glow { 50% { filter: brightness(1.25) drop-shadow(0 0 6px #6fe3ff); } }
 
-#badge, #label { position: absolute; left: 48px; white-space: nowrap; border-radius: 9px; font-size: 12px; font-weight: 700; padding: 3px 8px; opacity: 0; transition: opacity .2s; }
-#badge { top: 26px; background: var(--ink); color: var(--paper); }
-#label { top: -2px; background: var(--mark); color: #fff; font-size: 13px; padding: 4px 10px; box-shadow: 0 0 0 2px #fff; }
+#badge, #label { position: absolute; left: 58px; white-space: nowrap; border-radius: 9px; font-size: 12px; font-weight: 700; padding: 3px 8px; opacity: 0; transition: opacity .2s; }
+#badge { top: 32px; background: var(--ink); color: var(--paper); }
+#label { top: 2px; background: var(--mark); color: #fff; font-size: 13px; padding: 4px 10px; box-shadow: 0 0 0 2px #fff; }
 #badge.on, #label.on { opacity: 1; }
 
 #caption { position: fixed; left: 0; top: 0; max-width: 360px; background: var(--paper); color: var(--ink); border: 2px solid var(--ink); border-radius: 14px 14px 14px 4px; padding: 9px 13px; font-size: 14px; line-height: 1.4; box-shadow: 0 6px 18px rgba(0,0,0,.3); opacity: 0; transition: opacity .25s; will-change: transform; }

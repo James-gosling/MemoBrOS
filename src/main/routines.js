@@ -165,6 +165,19 @@ async function run(id) {
   return entry;
 }
 
+// A one-off background task started by voice ("check my Gmail for invoices"): same tools and guardrails, no schedule.
+async function runOnce(task) {
+  if (running) throw new Error('A background task is already running. Try again when it finishes.');
+  const job = { id: `once-${Date.now()}`, name: 'Background task', task, desktop: false };
+  running = { id: job.id, abort: new AbortController() };
+  let result;
+  try { result = { status: 'ok', summary: await brain.runRoutine({ routine: job, tools: toolset(), exec: guardedExec(job), signal: running.abort.signal }) }; }
+  catch (e) { result = { status: e.aborted ? 'stopped' : 'error', summary: e.message || String(e) }; }
+  running = null;
+  deps.announce?.(job, { at: new Date().toISOString(), ...result }, true);
+  return result;
+}
+
 function tick() {
   if (running) return;
   const now = new Date();
@@ -191,4 +204,4 @@ function init(d) {
 const stop = () => running?.abort.abort();
 const view = () => list().map((r) => ({ ...r, running: running?.id === r.id }));
 
-module.exports = { init, view, add, addFromText, addFromChat, update, remove, setEnabled, run, stop, tick, mcpWithApproval, fromDraft };
+module.exports = { runOnce, init, view, add, addFromText, addFromChat, update, remove, setEnabled, run, stop, tick, mcpWithApproval, fromDraft };
