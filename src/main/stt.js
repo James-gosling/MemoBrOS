@@ -2,35 +2,47 @@
 //  - local: Whisper running on-device through transformers.js (multilingual, no key; model downloads on first use)
 //  - cloud: any OpenAI-compatible /audio/transcriptions endpoint (OpenAI, Groq, ...)
 const path = require('path');
-const { app } = require('electron');
+const { app, utilityProcess } = require('electron');
 const { getSettings, getSecret } = require('./store');
 
-let localAsr = null; // { model, pipe }
+// ---- on-device recognition, in a separate process (see stt-worker.js) ------------------------
+let worker = null;       // { proc, pending: Map<id, { resolve, reject, onProgress }>, phase, log }
+let nextId = 1;
 
-async function localTranscribe(pcm, language, onProgress) {
-  const s = getSettings();
-  if (!localAsr || localAsr.model !== s.sttLocalModel) {
-    const { pipeline, env } = await import('@huggingface/transformers');
-    env.cacheDir = path.join(app.getPath('userData'), 'models');
-    let pipe;
-    try {
-      pipe = await pipeline('automatic-speech-recognition', s.sttLocalModel, {
-        dtype: 'q8',
-        progress_callback: (p) => { if (p.status === 'progress' && onProgress) onProgress(Math.round(p.progress || 0)); },
-      });
-    } catch (e) {
-      throw new Error(`Could not load the on-device speech model "${s.sttLocalModel}" (${e.message}). It downloads once from huggingface.co; check your connection, or switch to cloud speech recognition in Settings.`);
+function startWorker() {
+  const proc = utilityProcess.fork(path.join(__dirname, 'stt-worker.js'), [app.getPath('userData')], { stdio: 'pipe', serviceName: 'MemoBrOS speech' });
+  const w = { proc, pending: new Map(), phase: 'starting', log: '' };
+  const keep = (d) => { w.log = (w.log + d).slice(-600); };
+  proc.stdout?.on('data', keep); proc.stderr?.on('data', keep);
+  proc.on('message', (msg) => {
+    if (msg.phase) { w.phase = msg.phase; return; }
+    if (msg.progress !== undefined) { for (const p of w.pending.values()) p.onProgress?.(msg.progress); return; }
+    const p = w.pending.get(msg.id);
+    if (!p) return;
+    w.pending.delete(msg.id);
+    if (msg.error) p.reject(new Error(msg.error)); else p.resolve(msg.text);
+  });
+  proc.on('exit', (code) => {
+    if (worker === w) worker = null; // a fresh one is started on the next request
+    const detail = w.log.trim().split('\n').filter(Boolean).slice(-2).join(' | ');
+    for (const p of w.pending.values()) {
+      p.reject(new Error(`The on-device speech model stopped unexpectedly while ${w.phase} (exit code ${code}). MemoBrOS keeps running. Try a smaller model in Settings → Voice, or cloud speech recognition.${detail ? ` Details: ${detail}` : ''}`));
     }
-    localAsr = { model: s.sttLocalModel, pipe };
-  }
-  const opts = { task: 'transcribe', chunk_length_s: 30 };
-  if (language && language !== 'auto') opts.language = language;
-  let out;
-  // Whisper can get stuck repeating a phrase on noisy or quiet audio; forbidding repeated word triples stops the loop.
-  try { out = await localAsr.pipe(pcm, { ...opts, no_repeat_ngram_size: 3 }); }
-  catch { out = await localAsr.pipe(pcm, opts); }
-  return (out.text || '').trim();
+    w.pending.clear();
+  });
+  return w;
 }
+
+function localTranscribe(pcm, language, onProgress) {
+  if (!worker) worker = startWorker();
+  const w = worker;
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    w.pending.set(id, { resolve, reject, onProgress });
+    w.proc.postMessage({ id, pcm, model: getSettings().sttLocalModel, language });
+  });
+}
+const stopWorker = () => { if (worker) { const w = worker; worker = null; w.proc.kill(); } };
 
 function wav(pcm) {
   const buf = Buffer.alloc(44 + pcm.length * 2);
@@ -81,4 +93,4 @@ async function transcribe(pcm, onProgress, opts = {}) {
   return s.sttProvider === 'cloud' ? cloudTranscribe(pcm, s.language) : localTranscribe(pcm, s.language, onProgress);
 }
 
-module.exports = { transcribe, garbled };
+module.exports = { transcribe, garbled, stopWorker };

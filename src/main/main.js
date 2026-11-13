@@ -755,7 +755,7 @@ else {
     if (failed.length) panel.webContents.once('did-finish-load', () => toPanel({ type: 'message', role: 'error', text: `These shortcuts could not be registered: ${failed.join(', ')}. See Settings → Shortcuts for another way to bind them. Change them in Settings.` }));
   });
   app.on('window-all-closed', () => {});
-  app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); gateway.stop(); });
+  app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); gateway.stop(); stt.stopWorker(); });
   app.on('before-quit', () => { app.isQuitting = true; if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 

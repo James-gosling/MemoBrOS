@@ -87,6 +87,14 @@ Off by default. Turn it on in **Settings → Wake word** or from the tray menu.
 - CPU is used only while someone is speaking near the microphone, because each spoken phrase is transcribed.
   A dedicated keyword model would use less; see Recommendations.
 
+### The speech model runs in its own process
+
+On-device recognition runs in a separate process from the assistant. If it fails while downloading, loading or
+running a model, MemoBrOS stays open and shows what happened, with the last lines the speech process printed;
+the wake word switches itself off instead of retrying in a loop. Choose a smaller model under Settings → Voice
+if a larger one fails. Text that a recogniser invents from noise (a phrase repeated in a loop, stock lines such
+as "Thank you.") is detected and never acted on.
+
 ### If the microphone does not work
 
 MemoBrOS reports the problem once and says what it found. "Cannot find any microphone" means the system offers

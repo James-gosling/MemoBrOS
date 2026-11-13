@@ -294,6 +294,36 @@ async function noMicPart() {
   } finally { await app.evaluate(({ app: a }) => { a.isQuitting = true; a.quit(); }).catch(() => {}); await app.close().catch(() => {}); }
 }
 
+// The on-device speech model runs in its own process. If that process dies (as a native runtime fault would make
+// it), the assistant must stay up and say what happened.
+async function speechCrashPart() {
+  const t = setup('sttcrash', { permissions: { screen: true, microphone: true, control: true } });
+  const env = { ...t.env, MEMOBROS_TEST_STT_CRASH: '1' };
+  delete env.MEMOBROS_FAKE_TRANSCRIPT_FILE; // use the real recogniser path
+  const app = current = await _electron.launch({ executablePath: electronBin, args: [...appArgs, '--no-sandbox'], env });
+  try {
+    const panel = await until(() => app.windows().find((w) => w.url().endsWith('panel.html')), 'panel window');
+    await panel.waitForSelector('.empty');
+    const invoke = (channel, payload) => panel.evaluate(([c, p]) => window.memo.invoke(c, p), [channel, payload]);
+    const speak = () => panel.evaluate(() => window.memo.invoke('audio:segment', { pcm: new Float32Array(16000).buffer, mode: 'ask', final: true }));
+    await check('speech model crash: the assistant survives, explains it, and a fresh speech process is used next time', async () => {
+      await speak();
+      await until(async () => (await panel.locator('.msg.error').last().innerText()).includes('speech model stopped unexpectedly'), 'crash reported in the chat');
+      assert.match(await panel.locator('.msg.error').last().innerText(), /MemoBrOS keeps running\. Try a smaller model/);
+      assert.equal(app.process().exitCode, null, 'the app did not exit');
+      assert.equal((await invoke('state:get')).paused, false, 'and still answers');
+      // the wake word path: it switches itself off rather than crash-looping
+      await invoke('wake:set', { enabled: true });
+      await app.evaluate(() => global.__memo.heard(new Float32Array(16000)));
+      await until(async () => !(await invoke('state:get')).wakeOn, 'wake word turned itself off after the failure');
+      assert.match(await panel.locator('.msg.error').last().innerText(), /Wake word turned off: The on-device speech model stopped unexpectedly/);
+      api.state.script = [() => [text('Still here.')]];
+      await panel.fill('#text', 'are you alive?'); await panel.click('#send');
+      await until(async () => (await panel.locator('.msg.memo').last().innerText()).includes('Still here'), 'typed requests keep working');
+    });
+  } finally { await app.evaluate(({ app: a }) => { a.isQuitting = true; a.quit(); }).catch(() => {}); await app.close().catch(() => {}); }
+}
+
 async function waylandPart() {
   if (spawnSync('which', ['weston']).status !== 0) { console.log('SKIP  native Wayland run (weston is not installed)'); return; }
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-xdg-'));
@@ -365,7 +395,7 @@ async function waylandPart() {
   fs.mkdirSync(out, { recursive: true });
   api = await fake.start();
   try {
-    if (process.env.DISPLAY) { await x11Part(); await noMicPart(); } else console.log('SKIP  X11 part (no DISPLAY)');
+    if (process.env.DISPLAY) { await x11Part(); await noMicPart(); await speechCrashPart(); } else console.log('SKIP  X11 part (no DISPLAY)');
     await waylandPart();
   } finally { api.close(); }
   const failed = results.filter((r) => r[1] === 'FAIL').length;
