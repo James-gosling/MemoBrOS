@@ -8,11 +8,12 @@
   "private": true,
   "scripts": {
     "postinstall": "install-electron",
-    "start": "electron .",
+    "start": "electron . --ozone-platform=x11",
     "test": "node test/worktrees.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "start:wayland": "electron . --ozone-platform=wayland --enable-features=GlobalShortcutsPortal"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

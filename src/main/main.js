@@ -7,11 +7,20 @@ if (process.env.MEMOBROS_USER_DATA) app.setPath('userData', process.env.MEMOBROS
 
 // Platform setup. Linux: run through X11 (XWayland on Wayland sessions), which the always-on-top overlay,
 // global hotkeys and synthetic input need. Windows: an app id so notifications and the taskbar group correctly.
+// The display backend has to be chosen on the real command line: switching it from JavaScript is too late on a
+// Wayland session and leaves windows that never paint. `npm start` passes --ozone-platform=x11; when the flag is
+// missing on a Wayland session (an installed build, a bare `electron .`), relaunch once with it.
+let relaunching = false;
 if (process.platform === 'linux') {
-  // MEMOBROS_DISPLAY=wayland runs natively on Wayland instead (overlay, hotkeys and agent input are then limited).
-  app.commandLine.appendSwitch('ozone-platform', process.env.MEMOBROS_DISPLAY === 'wayland' ? 'wayland' : 'x11');
+  const flagged = process.argv.some((a) => a.startsWith('--ozone-platform='));
+  const wayland = process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY;
+  if (!flagged && wayland) {
+    relaunching = true;
+    app.relaunch({ args: [...process.argv.slice(1), `--ozone-platform=${process.env.MEMOBROS_DISPLAY === 'wayland' ? 'wayland' : 'x11'}`] });
+    app.exit(0);
+  }
   // The app draws a chat panel and a few vector shapes; it does not need the GPU. On some drivers the GPU process
-  // crashes under XWayland and windows never appear, so render in software unless MEMOBROS_GPU=1 asks otherwise.
+  // crashes under XWayland, so render in software unless MEMOBROS_GPU=1 asks otherwise.
   if (process.env.MEMOBROS_GPU !== '1') app.disableHardwareAcceleration();
 }
 if (process.platform === 'win32') app.setAppUserModelId('com.memobros.app');
@@ -546,7 +555,7 @@ ipcMain.handle('memo', async (_e, channel, payload) => {
 });
 
 // ---- app lifecycle --------------------------------------------------------------------------
-if (!app.requestSingleInstanceLock()) app.quit();
+if (relaunching) { /* this process is exiting; the relaunched one does the work */ } else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => panel && panel.show());
   app.whenReady().then(async () => {
