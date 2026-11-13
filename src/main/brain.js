@@ -1,49 +1,18 @@
-// Everything that talks to Claude: screen-aware answers, walkthrough steps, agent mode, dictation polish.
+// Everything that talks to the model: screen-aware answers, walkthrough steps, agent mode, dictation polish.
 const fs = require('fs');
 const path = require('path');
-const sdk = require('@anthropic-ai/sdk');
-const Anthropic = sdk.default || sdk;
 const store = require('./store');
+const llm = require('./llm');
 
-const FALLBACK_MODELS = /^claude-(fable-5-[12]|opus-5(-5)?|sonnet-5-5)$/; // models that accept server-side refusal fallbacks
-let fallbacksOk = true;
 let history = []; // [{ role, content: string }] — text-only memory of the conversation
-
-function client() {
-  const apiKey = store.getSecret('anthropic');
-  if (!apiKey) throw new Error('No Anthropic API key yet. Open the MemoBrOS panel → Settings and paste one (or set ANTHROPIC_API_KEY).');
-  return new Anthropic({ apiKey });
-}
-
-async function call({ system, messages, tools, effort = 'low', model, signal }) {
-  const m = model || store.getSettings().model;
-  const params = { model: m, max_tokens: 16000, system, messages, output_config: { effort } };
-  if (tools) params.tools = tools;
-  const c = client();
-  try {
-    if (fallbacksOk && FALLBACK_MODELS.test(m)) {
-      try {
-        return await c.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }, { signal });
-      } catch (e) {
-        if (!(e instanceof Anthropic.BadRequestError) || !/fallback/i.test(e.message)) throw e;
-        fallbacksOk = false; // this account/platform does not take the fallbacks parameter
-      }
-    }
-    return await c.messages.create(params, { signal });
-  } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError) throw new Error('Anthropic rejected the API key. Check it in Settings.');
-    if (e instanceof Anthropic.RateLimitError) throw new Error('Rate limited by the Anthropic API — give it a moment and try again.');
-    if (e instanceof Anthropic.APIUserAbortError) throw Object.assign(new Error('Stopped.'), { aborted: true });
-    if (e instanceof Anthropic.APIError) throw new Error(`Claude API error${e.status ? ` ${e.status}` : ''}: ${e.message}`);
-    throw e;
-  }
-}
+const call = (params) => llm.call(params);
 
 const textOf = (res) => res.content.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
 const toolUses = (res) => res.content.filter((b) => b.type === 'tool_use');
 const refused = (res) => res.stop_reason === 'refusal';
 
 // ---- prompts ----------------------------------------------------------------
+const nowLine = () => `Right now it is ${new Date().toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })} in the user's time zone (${Intl.DateTimeFormat().resolvedOptions().timeZone}).`;
 function systemPrompt(shot, pinnedSkill, extra = '') {
   const memory = store.getMemory();
   const skills = store.listSkills();
@@ -53,6 +22,7 @@ function systemPrompt(shot, pinnedSkill, extra = '') {
     `Each request comes with a screenshot of the display the user is working on, ${shot.w}x${shot.h} pixels. Every coordinate you give is a pixel position in that screenshot, origin at the top left. A small MemoBrOS panel and your own cursor buddy may appear in the screenshot; they are not part of the user's work.`,
     `When the answer is about something visible on screen, show it rather than only describing it: call point to fly your cursor to the exact control (aim at its center), or draw to circle, box, underline or label things, and then say what to do there. If the thing they need is not on screen, say where to find it instead of pointing at a guess.`,
     `When the user wants to learn a multi-step procedure in an app ("walk me through", "how do I", "teach me"), call start_walkthrough with short imperative steps; the app then takes them through one step at a time and you point at each one. When the user asks you to do something on the computer for them, call start_agent with a clear task description; they will be asked to approve your plan first.`,
+    `When the user wants something done repeatedly or at a later time ("every Tuesday at 5 PM…", "each morning…", "tomorrow at 9…"), call create_routine. ${nowLine()}`,
     `When the user tells you something worth keeping for later (a preference, a name, how they like things done), call remember.`,
     memory.length ? `Things you remember about this user:\n${memory.map((m) => `- ${m.note}`).join('\n')}` : '',
     skills.length ? `Skills are reusable instructions the user has saved. Before doing something a skill covers, call use_skill to read it and then follow it.\n${skills.map((s) => `- ${s.name}: ${s.description}`).join('\n')}` : '',
@@ -82,6 +52,15 @@ const DRAW = tool('draw', 'Draw annotations on top of the user\'s screen. Use se
 const USE_SKILL = tool('use_skill', 'Read the full instructions of one of the user\'s saved skills.', { name: { type: 'string' } });
 const REMEMBER = tool('remember', 'Save a short note to long-term memory so you know it in future conversations.', { note: { type: 'string' } });
 const START_WALKTHROUGH = tool('start_walkthrough', 'Begin a guided, step-by-step walkthrough in the app the user is looking at.', { title: { type: 'string' }, steps: { type: 'array', items: { type: 'string' }, description: 'Short imperative steps, in order' } });
+const ROUTINE_PROPS = {
+  name: { type: 'string', description: 'Short title, e.g. "Invoice check"' },
+  task: { type: 'string', description: 'What to do on each run, written as an instruction to yourself, without the schedule' },
+  cron: { type: 'string', description: 'For repeating schedules: 5-field cron in the user\'s local time (minute hour day-of-month month day-of-week), numbers only, Sunday is 0. "Every Tuesday at 5 PM" is "0 17 * * 2".' },
+  run_once_at: { type: 'string', description: 'For one-off schedules instead of cron: local date-time like 2026-11-14T09:00' },
+  schedule_text: { type: 'string', description: 'The schedule in plain words, in the user\'s language' },
+  needs_screen: { type: 'boolean', description: 'true only if the task has to operate desktop apps with the mouse and keyboard; false when background tools (web browser, connected MCP tools) are enough' },
+};
+const CREATE_ROUTINE = tool('create_routine', 'Schedule a task to run automatically, repeating or once, in the background.', ROUTINE_PROPS, ['name', 'task', 'schedule_text']);
 const START_AGENT = tool('start_agent', 'Hand a task to agent mode, which operates the mouse and keyboard after the user approves the plan.', { task: { type: 'string' } });
 
 // ---- attachments ------------------------------------------------------------
@@ -111,7 +90,7 @@ async function turn({ system, content, tools, handlers, effort, signal, maxRound
     const results = [];
     for (const u of uses) {
       let out, isError = false;
-      try { out = await (handlers[u.name] ? handlers[u.name](u.input) : `Unknown tool ${u.name}`); } catch (e) { out = String(e.message || e); isError = true; }
+      try { out = await (handlers[u.name] ? handlers[u.name](u.input) : handlers.__other ? handlers.__other(u.name, u.input) : `Unknown tool ${u.name}`); } catch (e) { out = String(e.message || e); isError = true; }
       results.push({ type: 'tool_result', tool_use_id: u.id, content: out || 'ok', is_error: isError });
     }
     messages.push({ role: 'user', content: results });
@@ -140,9 +119,11 @@ async function ask({ text, shot, attachments, pinnedSkill, hooks, signal }) {
   const reply = await turn({
     system: systemPrompt(shot, pinnedSkill),
     content: [...attachmentBlocks(attachments), shotBlock(shot), { type: 'text', text }],
-    tools: [POINT, DRAW, START_WALKTHROUGH, START_AGENT, USE_SKILL, REMEMBER],
+    tools: [POINT, DRAW, START_WALKTHROUGH, START_AGENT, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
     handlers: {
       ...baseHandlers(hooks),
+      create_routine: (i) => hooks.createRoutine(i),
+      __other: (name, input) => hooks.callTool(name, input),
       start_walkthrough: async (i) => { hooks.startWalkthrough(i); return 'Walkthrough queued. The app will start step 1 right after you finish speaking; just give a one-sentence intro now.'; },
       start_agent: async (i) => { hooks.startAgent(i.task); return 'Agent mode queued; the user will see your plan and approve it. Say one short sentence acknowledging.'; },
     },
@@ -195,7 +176,7 @@ async function runAgent({ task, planText, shot, pinnedSkill, io, signal }) {
   const messages = [{ role: 'user', content: [shotBlock(shot), { type: 'text', text: `Task: ${task}\n\nPlan the user approved:\n${planText}\n\nGo ahead.` }] }];
   for (let step = 1; step <= max; step++) {
     if (signal.aborted) throw Object.assign(new Error('Stopped.'), { aborted: true });
-    const res = await call({ system: systemPrompt(shot, pinnedSkill, agentExtra), messages, tools: AGENT_TOOLS, effort: 'medium', signal });
+    const res = await call({ system: systemPrompt(shot, pinnedSkill, agentExtra), messages, tools: AGENT_TOOLS, effort: 'medium', signal, keepImages: 2 });
     if (refused(res)) return "I can't continue with that task.";
     const said = textOf(res);
     const uses = toolUses(res);
@@ -223,10 +204,56 @@ async function runAgent({ task, planText, shot, pinnedSkill, io, signal }) {
   return `I stopped after ${max} steps without finishing. Tell me how you'd like to continue.`;
 }
 
+// ---- routines -------------------------------------------------------------------
+// Turns "Every Tuesday at 5 PM, check my inbox for invoices" into a routine draft, without a screenshot.
+async function draftRoutine(text, signal) {
+  const res = await call({
+    system: `You turn a spoken request into a scheduled routine. ${nowLine()} Reply with only a JSON object with these keys:\n${Object.entries(ROUTINE_PROPS).map(([k, v]) => `- ${k}: ${v.description}`).join('\n')}\nUse exactly one of cron or run_once_at. If the request has no schedule at all, set both to null.`,
+    messages: [{ role: 'user', content: text }],
+    effort: 'low', signal,
+  });
+  const m = /\{[\s\S]*\}/.exec(textOf(res));
+  if (!m) throw new Error("I couldn't work out a schedule from that. Try something like \"every weekday at 9 AM, …\".");
+  try { return JSON.parse(m[0]); } catch { throw new Error("I couldn't work out a schedule from that. Try something like \"every weekday at 9 AM, …\"."); }
+}
+
+// Runs a routine headlessly: no screenshot, no mouse. `tools` and `exec(name, input)` come from the routine runner,
+// which enforces the guardrails (approval before uploads, form submissions and non-read-only connected tools).
+async function runRoutine({ routine, tools, exec, signal }) {
+  const memory = store.getMemory();
+  const system = [
+    `You are Memo, the assistant inside MemoBrOS, running the user's scheduled routine "${routine.name}" in the background while they do other things. You cannot see their screen or use their mouse; work only through the tools you are given (a background web browser that is signed in to the accounts the user connected, their connected MCP tools, and their shared folders).`,
+    `Work quietly and finish the job. Reading and looking things up needs no permission. Before anything that is hard to undo or that reaches other people (sending, posting, paying, deleting, changing settings), call request_approval and wait; if the user says no, stop that part and say so in your report. The app itself also pauses for the user's approval on uploads, form submissions and tools that change things.`,
+    `End with a report of one to three plain sentences for a notification: what you found or did, and anything that needs the user's attention. If you could not do the task, say why.`,
+    nowLine(),
+    memory.length ? `Things you remember about this user:\n${memory.map((m) => `- ${m.note}`).join('\n')}` : '',
+    routine.plan ? `When this was first done by hand, this plan worked:\n${routine.plan}` : '',
+  ].filter(Boolean).join('\n\n');
+  const messages = [{ role: 'user', content: routine.task }];
+  let report = '';
+  for (let round = 0; round < 25; round++) {
+    if (signal.aborted) throw Object.assign(new Error('Stopped.'), { aborted: true });
+    const res = await call({ system, messages, tools, effort: 'medium', signal });
+    if (refused(res)) return report || "I can't do that task.";
+    report = textOf(res) || report;
+    const uses = toolUses(res);
+    if (res.stop_reason !== 'tool_use' || !uses.length) return report || 'Finished.';
+    messages.push({ role: 'assistant', content: res.content });
+    const results = [];
+    for (const u of uses) {
+      let out, isError = false;
+      try { out = await exec(u.name, u.input); } catch (e) { if (e.aborted) throw e; out = String(e.message || e); isError = true; }
+      results.push({ type: 'tool_result', tool_use_id: u.id, content: String(out || 'ok').slice(0, 20000), is_error: isError });
+    }
+    messages.push({ role: 'user', content: results });
+  }
+  return `${report} (Stopped after 25 steps without finishing.)`.trim();
+}
+
 // ---- 4: dictation polish ------------------------------------------------------
 async function polish(raw, signal) {
   const res = await call({
-    model: store.getSettings().dictationModel,
+    model: store.getSettings().provider === 'anthropic' ? store.getSettings().dictationModel : undefined,
     system: 'You clean up dictated speech before it is typed into a text field. Fix grammar, punctuation, capitalization and obvious mis-hearings, and drop filler words and false starts. Keep the speaker\'s language, wording and meaning; never translate, answer, or add anything. Reply with only the corrected text.',
     messages: [{ role: 'user', content: raw }],
     effort: 'low', signal,
@@ -234,4 +261,4 @@ async function polish(raw, signal) {
   return refused(res) ? raw : textOf(res) || raw;
 }
 
-module.exports = { ask, walkStep, plan, runAgent, polish, resetHistory, hasKey: () => !!store.getSecret('anthropic') };
+module.exports = { ask, walkStep, plan, runAgent, polish, resetHistory, draftRoutine, runRoutine, hasKey: () => llm.ready() };

@@ -1,7 +1,7 @@
 // MemoBrOS main process: windows, hotkeys and the orchestration of the five abilities.
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, dialog, nativeImage, screen, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, dialog, nativeImage, screen, session, systemPreferences } = require('electron');
 
 if (process.env.MEMOBROS_USER_DATA) app.setPath('userData', process.env.MEMOBROS_USER_DATA);
 
@@ -10,12 +10,17 @@ const shots = require('./screen');
 const input = require('./input');
 const stt = require('./stt');
 const brain = require('./brain');
+const llm = require('./llm');
+const mcp = require('./mcp');
+const web = require('./webagent');
+const routines = require('./routines');
 
 let overlay, panel, tray;
 let task = null;            // { abort: AbortController } — the request currently running
 let listening = null;       // 'ask' | 'agent' | 'dictate' | null
 let walkthrough = null;     // { title, steps, i }
-let pendingConfirm = null;  // { resolve }
+let pendingConfirm = null;  // { resolve, timer } — the approval card currently shown
+let confirmQueue = Promise.resolve();
 let attachments = [];       // [{ name, path }]
 let pinnedSkillId = null;
 let dictationQueue = Promise.resolve();
@@ -25,6 +30,7 @@ const toPanel = (event) => panel && !panel.isDestroyed() && panel.webContents.se
 const toOverlay = (event) => overlay && !overlay.isDestroyed() && overlay.webContents.send('memo:event', event);
 const say = (text, tag) => { if (!text) return; toPanel({ type: 'message', role: 'memo', text, tag }); toPanel({ type: 'say', text }); toOverlay({ type: 'caption', text }); };
 const status = (kind, text = '') => { toOverlay({ type: 'status', kind, text }); toPanel({ type: 'status', kind, text }); };
+const notify = (title, body) => { try { if (Notification.isSupported()) new Notification({ title, body: String(body || '').slice(0, 300) }).show(); } catch { /* no notification daemon */ } };
 const pinnedSkill = () => store.listSkills().find((s) => s.id === pinnedSkillId) || null;
 
 // ---- windows ------------------------------------------------------------------
@@ -133,6 +139,7 @@ async function run(fn) {
 function stopEverything() {
   if (task) task.abort.abort();
   resolveConfirm(false);
+  routines.stop();
   if (listening) setListening(null);
   toPanel({ type: 'shutup' });
   toOverlay({ type: 'clear' });
@@ -170,7 +177,14 @@ function doAsk(text) {
     let next = null;
     const reply = await brain.ask({
       text, shot, attachments, pinnedSkill: pinnedSkill(), signal,
-      hooks: { ...hooksFor(shot), startWalkthrough: (w) => { next = () => startWalkthrough(w); }, startAgent: (t) => { next = () => doAgent(t, true); } },
+      hooks: {
+        ...hooksFor(shot),
+        startWalkthrough: (w) => { next = () => startWalkthrough(w); },
+        startAgent: (t) => { next = () => doAgent(t, true); },
+        createRoutine: (draft) => describeRoutine(routines.add(draft)),
+        extraTools: mcp.forModel(),
+        callTool: (name, args) => { toPanel({ type: 'message', role: 'action', text: `Using ${name.replace(/^mcp__/, '').replace('__', ' → ')}` }); return routines.mcpWithApproval(name, args, 'Memo'); },
+      },
     });
     say(reply);
     if (next) setImmediate(next);
@@ -204,20 +218,26 @@ function walkMove(delta) {
 function walkStop() { walkthrough = null; toPanel({ type: 'walk', walk: null }); toOverlay({ type: 'clear' }); }
 
 // ---- ability 3: agent mode --------------------------------------------------------
-function confirm(title, text) {
-  resolveConfirm(false);
-  toPanel({ type: 'confirm', confirm: { title, text, hotkey: store.getSettings().hotkeys.approve } });
-  toOverlay({ type: 'caption', text: `${title} — approve in the MemoBrOS panel`, sticky: true });
-  if (!panel.isVisible()) panel.showInactive();
-  return new Promise((resolve) => { pendingConfirm = { resolve }; });
+// Approval cards are shown one at a time. Resolves true, false, or 'always' (when opts.always offers that choice).
+function confirm(title, text, opts = {}) {
+  const shown = confirmQueue.then(() => new Promise((resolve) => {
+    pendingConfirm = { resolve, timer: opts.timeoutMs ? setTimeout(() => resolveConfirm(false), opts.timeoutMs) : null };
+    toPanel({ type: 'confirm', confirm: { title, text, always: opts.always || '', hotkey: store.getSettings().hotkeys.approve } });
+    toOverlay({ type: 'caption', text: `${title} — answer in the MemoBrOS panel`, sticky: true });
+    if (!panel.isVisible()) panel.showInactive();
+    if (opts.notify && !panel.isFocused()) notify('MemoBrOS needs your approval', title);
+  }));
+  confirmQueue = shown.catch(() => {});
+  return shown;
 }
-function resolveConfirm(ok) {
+function resolveConfirm(answer) {
   if (!pendingConfirm) return;
   const p = pendingConfirm;
   pendingConfirm = null;
+  clearTimeout(p.timer);
   toPanel({ type: 'confirm', confirm: null });
   toOverlay({ type: 'caption', text: '' });
-  p.resolve(ok);
+  p.resolve(answer);
 }
 
 const describe = (name, i) => ({
@@ -250,17 +270,20 @@ async function execAction(name, i, shot, signal) {
   return 'ok';
 }
 
-function doAgent(taskText, quiet = false) {
-  if (!taskText.trim()) { say('What should I do? Say "memo agent" followed by the task.'); return; }
-  if (!quiet) toPanel({ type: 'message', role: 'user', text: taskText, tag: 'Agent' });
-  return run(async (signal) => {
+// Runs a desktop agent task. Resolves { status, summary }. opts.routine marks a scheduled run.
+async function doAgent(taskText, quiet = false, opts = {}) {
+  if (!taskText.trim()) { say('What should I do? Say "memo agent" followed by the task.'); return { status: 'error', summary: 'No task given.' }; }
+  if (!quiet) toPanel({ type: 'message', role: 'user', text: taskText, tag: opts.routine ? `Routine · ${opts.routine.name}` : 'Agent' });
+  let result = { status: 'stopped', summary: 'Stopped before finishing.' };
+  await run(async (signal) => {
     status('thinking', 'Planning');
     let shot = await captureFresh();
-    const planText = await brain.plan({ task: taskText, shot, pinnedSkill: pinnedSkill(), attachments, signal });
-    if (!planText) { say("That's not something I can do for you."); return; }
+    const planText = await brain.plan({ task: opts.routine?.plan ? `${taskText}\n\n(This plan worked last time: ${opts.routine.plan})` : taskText, shot, pinnedSkill: pinnedSkill(), attachments, signal });
+    if (!planText) { result = { status: 'error', summary: 'The model declined this task.' }; say("That's not something I can do for you."); return; }
     toPanel({ type: 'message', role: 'memo', text: planText, tag: 'Plan' });
     toPanel({ type: 'say', text: "Here's my plan. Approve it and I'll get going." });
-    if (!(await confirm('Approve this plan?', planText))) { say("Okay, I won't touch anything."); return; }
+    const approved = await confirm(opts.routine ? `Routine "${opts.routine.name}" is due. Approve this plan?` : 'Approve this plan?', planText, opts.routine ? { notify: true, timeoutMs: 15 * 60 * 1000 } : {});
+    if (!approved) { result = { status: 'skipped', summary: 'The plan was not approved, so nothing was touched.' }; say("Okay, I won't touch anything."); return; }
     agentRunning = true;
     panel.hide(); // hand keyboard focus back to the user's app
     await input.sleep(400);
@@ -272,17 +295,34 @@ function doAgent(taskText, quiet = false) {
         io: {
           capture: async () => { await input.sleep(450); return shots.capture(shot.display); },
           exec: (name, i, s) => execAction(name, i, s, signal),
-          confirm: async (q) => { const ok = await confirm('Memo needs your OK', q); if (ok) { panel.hide(); await input.sleep(250); } return ok; },
+          confirm: async (q) => { const ok = await confirm('Memo needs your OK', q); if (ok) { panel.hide(); await input.sleep(250); } return !!ok; },
           narrate: (t) => { toOverlay({ type: 'caption', text: t }); toPanel({ type: 'message', role: 'memo', text: t, tag: 'Agent' }); },
           step: (n) => status('acting', `Agent · step ${n}`),
         },
       });
+      result = { status: 'ok', summary };
       panel.showInactive();
-      say(summary, 'Done');
+      toPanel({ type: 'message', role: 'memo', text: summary, tag: 'Done', routineFrom: opts.routine ? null : { task: taskText, plan: planText } });
+      toPanel({ type: 'say', text: summary });
+      toOverlay({ type: 'caption', text: summary });
     } finally {
       agentRunning = false;
       if (!panel.isVisible()) panel.showInactive();
     }
+  });
+  return result;
+}
+
+// ---- routines --------------------------------------------------------------------------
+const when = (iso) => (iso ? new Date(iso).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'never');
+const describeRoutine = (r) => `Routine "${r.name}" is scheduled: ${r.scheduleText}. First run: ${when(r.nextRun)}. It runs ${r.desktop ? 'on the screen after the user approves the plan' : 'quietly in the background'}. Tell the user that in one sentence.`;
+
+function doRoutineFromText(text) {
+  toPanel({ type: 'message', role: 'user', text });
+  return run(async () => {
+    status('thinking', 'Scheduling');
+    const r = await routines.addFromText(text);
+    say(`Done. "${r.name}" will run ${r.scheduleText.replace(/^[A-Z]/, (c) => c.toLowerCase())}. First run: ${when(r.nextRun)}.`, 'Routine');
   });
 }
 
@@ -319,6 +359,7 @@ const NO = /^\W*(no|nope|cancel|stop|don't|cancela|para|detente|non|nein)\b/i;
 const NEXT = /^\W*(next|continue|done|got it|ok|okay|siguiente|listo|ya|contin[uú]a)\b/i;
 const BACK = /^\W*(back|previous|go back|atr[aá]s|anterior)\b/i;
 const AGENT = /^\W*(?:hey[,\s]+)?memo[,\s]+agent\b[\s,:.-]*/i;
+const RECURRING = /^\W*(every|each|cada|todos los|todas las|tous les|toutes les|jeden|ogni)\b/i; // schedules go straight to the routine maker
 
 function route(text, mode) {
   text = String(text || '').trim();
@@ -330,6 +371,7 @@ function route(text, mode) {
     if (NO.test(text)) { walkStop(); return say('Okay, walkthrough closed.'); }
   }
   if (AGENT.test(text)) return doAgent(text.replace(AGENT, ''));
+  if (RECURRING.test(text)) return doRoutineFromText(text);
   if (mode === 'agent') return doAgent(text);
   return doAsk(text);
 }
@@ -338,7 +380,9 @@ function route(text, mode) {
 function state() {
   const s = store.getSettings();
   return {
-    settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform,
+    settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
+    keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
+    routines: routines.view(), mcp: mcp.status(), sharedFolders: store.sharedFolders(),
     skills: store.listSkills(), pinnedSkillId, memory: store.getMemory(), attachments, walk: walkthrough, listening,
   };
 }
@@ -346,8 +390,10 @@ function pushState() { toPanel({ type: 'state', state: state() }); }
 
 const handlers = {
   'state:get': () => state(),
-  'settings:save': ({ settings, anthropicKey, sttKey }) => {
+  'settings:save': ({ settings, anthropicKey, sttKey, openrouterKey, omnirouteKey }) => {
     if (settings) store.saveSettings(settings);
+    if (openrouterKey !== undefined) store.setSecret('openrouter', openrouterKey.trim());
+    if (omnirouteKey !== undefined) store.setSecret('omniroute', omnirouteKey.trim());
     if (anthropicKey !== undefined) store.setSecret('anthropic', anthropicKey.trim());
     if (sttKey !== undefined) store.setSecret('stt', sttKey.trim());
     const failed = registerHotkeys();
@@ -367,7 +413,7 @@ const handlers = {
     if (!text) { status('idle'); return; }
     route(text, mode);
   },
-  'confirm:answer': ({ ok }) => resolveConfirm(!!ok),
+  'confirm:answer': ({ ok }) => resolveConfirm(ok === 'always' ? 'always' : !!ok),
   stop: () => stopEverything(),
   'walk:move': ({ delta }) => { walkMove(delta); },
   'walk:stop': () => walkStop(),
@@ -396,6 +442,36 @@ const handlers = {
   'memory:add': ({ note }) => { if (note.trim()) store.addMemory(note); return state(); },
   'memory:delete': ({ id }) => { store.deleteMemory(id); return state(); },
   'chat:reset': () => { brain.resetHistory(); walkStop(); },
+  'models:list': ({ provider }) => llm.listModels(provider),
+  // routines
+  'routine:create': async ({ text }) => { await routines.addFromText(text); return state(); },
+  'routine:fromChat': ({ task, plan }) => { const r = routines.addFromChat({ task, plan }); return { ...state(), createdId: r.id }; },
+  'routine:save': async (r) => { await routines.update(r); return state(); },
+  'routine:toggle': ({ id, enabled }) => { routines.setEnabled(id, enabled); return state(); },
+  'routine:delete': ({ id }) => { routines.remove(id); return state(); },
+  'routine:run': ({ id }) => { routines.run(id).catch((e) => toPanel({ type: 'message', role: 'error', text: e.message })); return state(); },
+  // custom MCP servers
+  'mcp:save': async ({ server, token }) => {
+    const id = server.id || `m${Date.now().toString(36)}`;
+    const clean = { id, name: String(server.name || 'Server').trim().slice(0, 40), type: server.type === 'http' ? 'http' : 'stdio', command: String(server.command || '').trim(), url: String(server.url || '').trim(), trust: server.trust === 'always' ? 'always' : 'ask', enabled: server.enabled !== false };
+    if (clean.type === 'http') new URL(clean.url); // throws on a malformed URL
+    const all = store.getSettings().mcpServers;
+    const old = all.find((c) => c.id === id);
+    store.saveSettings({ mcpServers: old ? all.map((c) => (c.id === id ? { ...old, ...clean } : c)) : [...all, { ...clean, allowedTools: [] }] });
+    if (token !== undefined) store.setSecret(`mcp:${id}`, token.trim());
+    await mcp.sync();
+    return state();
+  },
+  'mcp:delete': async ({ id }) => { store.saveSettings({ mcpServers: store.getSettings().mcpServers.filter((c) => c.id !== id) }); store.setSecret(`mcp:${id}`, ''); await mcp.sync(); return state(); },
+  'mcp:reconnect': async () => { await mcp.sync(true); return state(); },
+  // connected accounts + shared folders for background agents
+  'web:connect': ({ url }) => { web.showForLogin(url); },
+  'folders:pick': async () => {
+    const r = await dialog.showOpenDialog(panel, { title: 'Folders background agents may upload from', properties: ['openDirectory', 'multiSelections'] });
+    if (!r.canceled && r.filePaths.length) store.saveSettings({ sharedFolders: [...new Set([...store.sharedFolders(), ...r.filePaths])] });
+    return state();
+  },
+  'folders:remove': ({ folder }) => { store.saveSettings({ sharedFolders: store.sharedFolders().filter((f) => f !== folder) }); return state(); },
 };
 ipcMain.handle('memo', async (_e, channel, payload) => {
   if (!Object.prototype.hasOwnProperty.call(handlers, channel)) throw new Error(`Unknown channel ${channel}`);
@@ -413,11 +489,22 @@ else {
     createOverlay();
     createPanel();
     createTray();
+    routines.init({
+      confirm, notify, changed: pushState,
+      // A due desktop routine waits for the user's own request to finish, then asks before taking the screen.
+      runDesktop: async (r) => { while (task) await input.sleep(2000); return doAgent(r.task, false, { routine: r }); },
+      announce: (r, entry) => {
+        notify(`Routine "${r.name}" ${{ ok: 'finished', error: 'failed', stopped: 'was stopped', skipped: 'was skipped' }[entry.status] || entry.status}`, entry.summary);
+        if (!r.desktop) toPanel({ type: 'message', role: entry.status === 'error' ? 'error' : 'memo', text: entry.summary, tag: `Routine · ${r.name}` });
+      },
+    });
+    mcp.sync().then(pushState).catch((e) => console.error('MCP', e));
     const failed = registerHotkeys();
     if (failed.length) panel.webContents.once('did-finish-load', () => toPanel({ type: 'message', role: 'error', text: `These hotkeys are taken by another app: ${failed.join(', ')}. Change them in Settings.` }));
   });
   app.on('window-all-closed', () => {});
-  app.on('will-quit', () => globalShortcut.unregisterAll());
+  app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); });
+  app.on('before-quit', () => { app.isQuitting = true; if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 
-if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, get overlay() { return overlay; }, get panel() { return panel; } };
+if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, get overlay() { return overlay; }, get panel() { return panel; } };

@@ -71,3 +71,10 @@ body.dragging { outline: 3px dashed var(--memo); outline-offset: -6px; }
 #skill-list, #memory-list { display: flex; flex-direction: column; gap: 6px; }
 .hk { display: grid; grid-template-columns: 110px 1fr; gap: 6px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--muted); }
 ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; } ::-webkit-scrollbar-track { background: transparent; }
+.msg button.make-routine { display: block; margin-top: 8px; font-size: 12px; padding: 4px 10px; border-color: var(--memo); color: var(--memo); background: none; }
+.item .meta { display: block; font-size: 12px; color: var(--muted); }
+.item .meta.ok { color: var(--ok); } .item .meta.bad { color: var(--mark); }
+.item.off { opacity: .55; } .item.running { border-color: var(--ok); }
+.item .btns { display: flex; flex-direction: column; gap: 4px; flex: none; }
+#routine-list, #mcp-list, #folder-list { display: flex; flex-direction: column; gap: 6px; }
+nav button { font-size: 13px; }

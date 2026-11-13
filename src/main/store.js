@@ -4,7 +4,15 @@ const path = require('path');
 const { app, safeStorage } = require('electron');
 
 const DEFAULTS = {
-  model: 'claude-opus-5-5',
+  // Which LLM answers. OpenRouter and OmniRoute speak the OpenAI chat format and offer free models.
+  provider: 'openrouter', // openrouter | omniroute | anthropic
+  providers: {
+    openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free' },
+    omniroute: { baseUrl: 'http://localhost:20128/v1', model: 'auto' },
+  },
+  mcpServers: [], // [{ id, name, type: 'stdio' | 'http', command, url, trust: 'ask' | 'always', enabled, allowedTools: [] }]
+  sharedFolders: null, // folders background agents may pick upload files from; null → Documents, Downloads, Desktop
+  model: 'claude-opus-5-5', // Anthropic model, when provider is anthropic
   dictationModel: 'claude-opus-5-5',
   sttProvider: 'local', // local | cloud
   sttLocalModel: 'Xenova/whisper-base',
@@ -44,12 +52,18 @@ let settings;
 function getSettings() {
   if (!settings) {
     const saved = readJson('settings.json', {});
-    settings = { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...(saved.hotkeys || {}) } };
+    settings = { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...(saved.hotkeys || {}) }, providers: mergeProviders(DEFAULTS.providers, saved.providers) };
   }
   return settings;
 }
+const mergeProviders = (a, b = {}) => Object.fromEntries(Object.keys(a).map((k) => [k, { ...a[k], ...(b[k] || {}) }]));
+function sharedFolders() {
+  const s = getSettings();
+  return (s.sharedFolders || ['documents', 'downloads', 'desktop'].map((n) => { try { return app.getPath(n); } catch { return null; } })).filter(Boolean);
+}
 function saveSettings(patch) {
   const next = { ...getSettings(), ...patch };
+  if (patch.providers) next.providers = mergeProviders(getSettings().providers, patch.providers);
   if (patch.hotkeys) next.hotkeys = { ...getSettings().hotkeys, ...patch.hotkeys };
   settings = next;
   writeJson('settings.json', next);
@@ -58,7 +72,7 @@ function saveSettings(patch) {
 
 // ---- secrets (API keys), encrypted with the OS keychain when available ------
 function getSecret(name) {
-  const env = { anthropic: process.env.ANTHROPIC_API_KEY, stt: process.env.MEMOBROS_STT_API_KEY || process.env.OPENAI_API_KEY }[name];
+  const env = { anthropic: process.env.ANTHROPIC_API_KEY, openrouter: process.env.OPENROUTER_API_KEY, omniroute: process.env.OMNIROUTE_API_KEY, stt: process.env.MEMOBROS_STT_API_KEY || process.env.OPENAI_API_KEY }[name];
   const stored = readJson('secrets.json', {})[name];
   if (!stored) return env || '';
   try {
@@ -117,4 +131,10 @@ function saveSkill({ id, name, description, body }) {
 }
 function deleteSkill(id) { fs.rmSync(path.join(skillsDir(), `${slug(id)}.md`), { force: true }); }
 
-module.exports = { DEFAULTS, getSettings, saveSettings, getSecret, setSecret, getMemory, addMemory, deleteMemory, listSkills, saveSkill, deleteSkill };
+// ---- routines and upload grants ----------------------------------------------
+const getRoutines = () => readJson('routines.json', []);
+const saveRoutines = (list) => writeJson('routines.json', list);
+const getGrants = () => readJson('grants.json', []);
+const addGrant = (grant) => writeJson('grants.json', [...getGrants(), grant]);
+
+module.exports = { DEFAULTS, sharedFolders, getRoutines, saveRoutines, getGrants, addGrant, getSettings, saveSettings, getSecret, setSecret, getMemory, addMemory, deleteMemory, listSkills, saveSkill, deleteSkill };

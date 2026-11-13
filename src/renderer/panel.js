@@ -16,19 +16,26 @@ const HOTKEY_LABELS = { ask: 'Ask about screen', agent: 'Agent mode', dictate: '
 const pretty = (acc) => String(acc).replace('CommandOrControl', S?.platform === 'darwin' ? '⌘' : 'Ctrl').replace('Alt', S?.platform === 'darwin' ? '⌥' : 'Alt').replace(/\+/g, ' ');
 
 // ---- tabs -----------------------------------------------------------------------
-$('tabs').addEventListener('click', (e) => {
-  const tab = e.target.dataset.tab;
-  if (!tab) return;
-  for (const b of $('tabs').children) b.classList.toggle('on', b === e.target);
+function showTab(tab) {
+  for (const b of $('tabs').children) b.classList.toggle('on', b.dataset.tab === tab);
   for (const s of document.querySelectorAll('.tab')) s.classList.toggle('on', s.id === `tab-${tab}`);
-});
+}
+$('tabs').addEventListener('click', (e) => e.target.dataset.tab && showTab(e.target.dataset.tab));
 
 // ---- chat -----------------------------------------------------------------------
-function addMessage({ role, text, tag }) {
+function addMessage({ role, text, tag, routineFrom }) {
   $('messages').querySelector('.empty')?.remove();
   const m = h('div', { className: `msg ${role}` });
   if (tag) m.append(h('span', { className: 'tag', textContent: tag }));
   m.append(text);
+  if (routineFrom) { // chat-to-routine: one click turns this finished agent task into a scheduled routine
+    m.append(h('button', { className: 'make-routine', textContent: '↻ Repeat this on a schedule', onclick: async (e) => {
+      e.target.disabled = true;
+      S = await call('routine:fromChat', routineFrom);
+      renderRoutines(); showTab('routines');
+      editRoutine(S.routines.find((r) => r.id === S.createdId));
+    } }));
+  }
   $('messages').append(m);
   $('messages').scrollTop = $('messages').scrollHeight;
 }
@@ -39,7 +46,7 @@ function renderEmpty() {
   const e = h('div', { className: 'empty' });
   e.append(h('p', {}, 'Hi, I\'m Memo. Press ', kbd(hk.ask), ' and ask about anything on your screen. I\'ll point at it.'), h('br'),
     h('p', {}, kbd(hk.agent), ' and I do it for you. ', kbd(hk.dictate), ' to dictate into any app.'));
-  if (!S.hasKey) e.append(h('br'), h('p', { style: 'color:var(--memo)' }, 'First, add your Anthropic API key in Settings.'));
+  if (!S.hasKey) e.append(h('br'), h('p', { style: 'color:var(--memo)' }, `First, add your ${S.llm.name} API key in Settings. OpenRouter keys are free.`));
   $('messages').append(e);
 }
 
@@ -103,9 +110,12 @@ function renderConfirm(c) {
   if (!c) return;
   $('confirm-title').textContent = c.title;
   $('confirm-text').textContent = c.text;
+  $('confirm-always').hidden = !c.always;
+  $('confirm-always').textContent = c.always || '';
   $('confirm-hint').replaceChildren('Or press ', h('kbd', { textContent: pretty(c.hotkey) }), ' / say "yes".');
 }
 $('confirm-yes').addEventListener('click', () => call('confirm:answer', { ok: true }));
+$('confirm-always').addEventListener('click', () => call('confirm:answer', { ok: 'always' }));
 $('confirm-no').addEventListener('click', () => call('confirm:answer', { ok: false }));
 
 function renderStatus({ kind, text }) {
@@ -226,6 +236,84 @@ $('memory-form').addEventListener('submit', async (e) => {
   $('memory-note').value = ''; renderMemory();
 });
 
+// ---- routines ---------------------------------------------------------------------------
+let editingRoutine = null;
+const clean = (err) => err.message.replace(/^Error invoking remote method 'memo': Error: /, '');
+const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+function renderRoutines() {
+  $('routine-list').replaceChildren(...S.routines.map((r) => {
+    const last = r.lastRun;
+    const info = h('div', { className: 'grow' }, h('b', { textContent: r.name }),
+      h('span', { className: 'meta', textContent: `${r.scheduleText} · ${r.desktop ? 'on screen' : 'background'}` }),
+      h('span', { className: 'meta', textContent: r.running ? 'Running now…' : r.enabled ? `Next: ${fmtWhen(r.nextRun)}` : 'Paused' }));
+    if (last) info.append(h('span', { className: `meta ${last.status === 'ok' ? 'ok' : 'bad'}`, textContent: `${fmtWhen(last.at)}: ${last.summary}`.slice(0, 220) }));
+    const act = async (channel, payload) => { try { S = await call(channel, payload); renderRoutines(); } catch (e) { $('routine-note').textContent = clean(e); } };
+    return h('div', { className: `item${r.enabled ? '' : ' off'}${r.running ? ' running' : ''}` }, info, h('div', { className: 'btns' },
+      h('button', { textContent: 'Run now', disabled: r.running, onclick: () => act('routine:run', { id: r.id }) }),
+      h('button', { textContent: r.enabled ? 'Pause' : 'Resume', onclick: () => act('routine:toggle', { id: r.id, enabled: !r.enabled }) }),
+      h('button', { textContent: 'Edit', onclick: () => editRoutine(r) }),
+      h('button', { textContent: 'Delete', className: 'danger', onclick: () => act('routine:delete', { id: r.id }) })));
+  }));
+  if (!S.routines.length) $('routine-list').append(h('p', { className: 'muted small', textContent: 'No routines yet.' }));
+  $('folder-list').replaceChildren(...S.sharedFolders.map((f) => h('div', { className: 'item' }, h('div', { className: 'grow', textContent: f }),
+    h('button', { textContent: '✕', className: 'danger', onclick: async () => { S = await call('folders:remove', { folder: f }); renderRoutines(); } }))));
+}
+function editRoutine(r) {
+  editingRoutine = r || null;
+  $('routine-form').hidden = !r;
+  if (!r) return;
+  $('routine-name').value = r.name; $('routine-task').value = r.task; $('routine-when').value = r.scheduleText; $('routine-desktop').checked = r.desktop;
+  $('routine-form').scrollIntoView({ behavior: 'smooth' });
+}
+$('routine-cancel').addEventListener('click', () => editRoutine(null));
+$('routine-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('routine-note').textContent = 'Saving…';
+  try {
+    S = await call('routine:save', { id: editingRoutine.id, name: $('routine-name').value, task: $('routine-task').value, scheduleText: $('routine-when').value, desktop: $('routine-desktop').checked });
+    $('routine-note').textContent = ''; editRoutine(null); renderRoutines();
+  } catch (err) { $('routine-note').textContent = clean(err); }
+});
+$('routine-new').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('routine-text').value.trim();
+  if (!text) return;
+  $('routine-note').textContent = 'Working out the schedule…';
+  try { S = await call('routine:create', { text }); $('routine-text').value = ''; $('routine-note').textContent = ''; renderRoutines(); }
+  catch (err) { $('routine-note').textContent = clean(err); }
+});
+$('web-connect').addEventListener('submit', (e) => { e.preventDefault(); call('web:connect', { url: $('web-url').value.trim() }); });
+$('folder-add').addEventListener('click', async () => { S = await call('folders:pick'); renderRoutines(); });
+
+// ---- custom MCP servers -----------------------------------------------------------------
+function renderMcp() {
+  $('mcp-list').replaceChildren(...S.settings.mcpServers.map((c) => {
+    const st = S.mcp.find((m) => m.id === c.id) || { status: 'connecting', tools: [] };
+    const line = st.status === 'connected' ? `Connected · ${st.tools.length} tools: ${st.tools.slice(0, 6).join(', ')}${st.tools.length > 6 ? '…' : ''}` : st.status === 'error' ? `Failed: ${st.error}` : st.status;
+    return h('div', { className: 'item' }, h('div', { className: 'grow' }, h('b', { textContent: c.name }),
+      h('span', { className: 'meta', textContent: c.type === 'http' ? c.url : c.command }),
+      h('span', { className: `meta ${st.status === 'connected' ? 'ok' : st.status === 'error' ? 'bad' : ''}`, textContent: line })),
+    h('div', { className: 'btns' },
+      h('button', { textContent: 'Retry', onclick: async () => { S = await call('mcp:reconnect'); renderMcp(); } }),
+      h('button', { textContent: 'Remove', className: 'danger', onclick: async () => { S = await call('mcp:delete', { id: c.id }); renderMcp(); } })));
+  }));
+}
+function showMcpKind() {
+  const http = $('mcp-type').value === 'http';
+  $('mcp-command-row').hidden = http; $('mcp-url-row').hidden = !http; $('mcp-token-row').hidden = !http;
+}
+$('mcp-type').addEventListener('change', showMcpKind);
+$('mcp-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('mcp-note').textContent = 'Connecting…';
+  try {
+    const payload = { server: { name: $('mcp-name').value, type: $('mcp-type').value, command: $('mcp-command').value, url: $('mcp-url').value, trust: $('mcp-trust').value } };
+    if ($('mcp-token').value) payload.token = $('mcp-token').value;
+    S = await call('mcp:save', payload);
+    $('mcp-form').reset(); showMcpKind(); $('mcp-note').textContent = ''; renderMcp();
+  } catch (err) { $('mcp-note').textContent = clean(err); }
+});
+
 // ---- settings ---------------------------------------------------------------------------
 function fillVoices() {
   const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
@@ -236,7 +324,13 @@ if (window.speechSynthesis) speechSynthesis.onvoiceschanged = fillVoices;
 
 function renderSettings() {
   const s = S.settings;
-  $('set-key').value = ''; $('set-key').placeholder = S.hasKey ? 'Saved. Paste a new key to replace it' : 'sk-ant-…';
+  $('set-provider').value = s.provider;
+  showProvider();
+  $('set-or-key').value = ''; $('set-or-key').placeholder = S.keys.openrouter ? 'Saved. Paste a new key to replace it' : 'sk-or-… (free at openrouter.ai/keys)';
+  $('set-or-model').value = s.providers.openrouter.model;
+  $('set-omni-url').value = s.providers.omniroute.baseUrl; $('set-omni-model').value = s.providers.omniroute.model;
+  $('set-omni-key').value = ''; $('set-omni-key').placeholder = S.keys.omniroute ? 'Saved' : 'Optional for a local gateway';
+  $('set-key').value = ''; $('set-key').placeholder = S.keys.anthropic ? 'Saved. Paste a new key to replace it' : 'sk-ant-…';
   $('set-model').value = s.model; $('set-dict-model').value = s.dictationModel;
   $('set-stt').value = s.sttProvider; $('set-stt-url').value = s.sttBaseUrl; $('set-stt-model').value = s.sttCloudModel;
   $('set-stt-key').value = ''; $('set-stt-key').placeholder = S.hasSttKey ? 'Saved' : 'API key for the endpoint';
@@ -247,11 +341,32 @@ function renderSettings() {
   fillVoices();
   $('hotkeys').replaceChildren(...Object.entries(HOTKEY_LABELS).map(([k, label]) => h('div', { className: 'hk' }, label, h('input', { value: s.hotkeys[k], id: `hk-${k}` }))));
 }
+function showProvider() {
+  const p = $('set-provider').value;
+  for (const k of ['openrouter', 'omniroute', 'anthropic']) $(`prov-${k}`).hidden = k !== p;
+  $('dict-model-row').hidden = p !== 'anthropic';
+}
+$('set-provider').addEventListener('change', showProvider);
+async function findModels(provider, listId, noteId, inputId) {
+  $(noteId).textContent = 'Loading…';
+  try {
+    const models = await call('models:list', { provider });
+    const good = provider === 'openrouter' ? models.filter((m) => m.free) : models;
+    $(listId).replaceChildren(...good.map((m) => h('option', { value: m.id, label: `${m.name}${m.vision ? ' · sees images' : ''}${m.tools ? ' · tools' : ''}` })));
+    const best = good.find((m) => m.vision && m.tools);
+    $(noteId).textContent = good.length ? `${good.length} ${provider === 'openrouter' ? 'free ' : ''}models. Pick one that sees images and calls tools${best ? `, e.g. ${best.id}` : ''}.` : 'No models found.';
+    $(inputId).focus();
+  } catch (e) { $(noteId).textContent = e.message.replace(/^Error invoking remote method 'memo': Error: /, ''); }
+}
+$('or-find').addEventListener('click', () => findModels('openrouter', 'or-models', 'or-note', 'set-or-model'));
+$('omni-find').addEventListener('click', () => findModels('omniroute', 'omni-models', 'omni-note', 'set-omni-model'));
 $('set-stt').addEventListener('change', () => { $('stt-cloud').hidden = $('set-stt').value !== 'cloud'; });
 $('settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = {
     settings: {
+      provider: $('set-provider').value,
+      providers: { openrouter: { model: $('set-or-model').value.trim() || 'openrouter/free' }, omniroute: { baseUrl: $('set-omni-url').value.trim() || 'http://localhost:20128/v1', model: $('set-omni-model').value.trim() || 'auto' } },
       model: $('set-model').value, dictationModel: $('set-dict-model').value, sttProvider: $('set-stt').value,
       sttBaseUrl: $('set-stt-url').value.trim(), sttCloudModel: $('set-stt-model').value.trim(), language: $('set-lang').value,
       speak: $('set-speak').checked, voice: $('set-voice').value, dictationPolish: $('set-polish').checked, confirmEachAction: $('set-confirm-each').checked,
@@ -259,6 +374,8 @@ $('settings-form').addEventListener('submit', async (e) => {
     },
   };
   if ($('set-key').value) payload.anthropicKey = $('set-key').value;
+  if ($('set-or-key').value) payload.openrouterKey = $('set-or-key').value;
+  if ($('set-omni-key').value) payload.omnirouteKey = $('set-omni-key').value;
   if ($('set-stt-key').value) payload.sttKey = $('set-stt-key').value;
   const res = await call('settings:save', payload);
   S = res;
@@ -268,7 +385,7 @@ $('settings-form').addEventListener('submit', async (e) => {
 
 // ---- wiring -----------------------------------------------------------------------------
 function renderAll() {
-  renderSettings(); renderSkills(); renderMemory(); renderAttachments(S.attachments); renderWalk(S.walk); setMode(mode); renderEmpty();
+  renderSettings(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderAttachments(S.attachments); renderWalk(S.walk); setMode(mode); renderEmpty();
 }
 
 window.memo.on((e) => {
@@ -278,7 +395,7 @@ window.memo.on((e) => {
   else if (e.type === 'status') renderStatus(e);
   else if (e.type === 'walk') renderWalk(e.walk);
   else if (e.type === 'confirm') renderConfirm(e.confirm);
-  else if (e.type === 'state') { S = e.state; renderSkills(); renderMemory(); }
+  else if (e.type === 'state') { S = e.state; renderSkills(); renderMemory(); renderRoutines(); renderMcp(); }
   else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else stopRec(true); }
 });
 

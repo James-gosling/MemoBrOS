@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { _electron } = require('playwright');
-const fake = require('./fakeClaude');
+const fake = require('./fakeLLM');
 const { text, use } = fake;
 
 const root = path.join(__dirname, '..');
@@ -24,6 +24,7 @@ async function until(fn, what, ms = 15000) {
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-test-'));
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ provider: 'anthropic' })); // this suite covers the Claude path; e2e-free.js covers the free providers
   const api = await fake.start();
   const app = await _electron.launch({
     executablePath: require('electron'),
