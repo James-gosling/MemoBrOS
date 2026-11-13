@@ -3,7 +3,7 @@
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif; }
 body { display: flex; flex-direction: column; }
-header { padding: 10px 12px 0; border-bottom: 1px solid var(--line); }
+header { padding: 6px 10px 0 12px; border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; letter-spacing: .2px; }
 .brand b { color: var(--memo); font-weight: 800; }
 nav { display: flex; gap: 2px; margin-top: 8px; }
@@ -90,3 +90,27 @@ nav button { font-size: 13px; }
 .agent b { display: block; } .agent span { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
 .agent i { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
 #modes button { font-size: 13px; }
+
+/* ---- floating window chrome ---- */
+html, body { border-radius: 0; } body { border: 1px solid var(--line); }
+#titlebar { display: flex; align-items: center; gap: 8px; height: 34px; -webkit-app-region: drag; user-select: none; }
+#titlebar .brand { font-size: 15px; }
+#winbtns { margin-left: auto; display: flex; gap: 2px; -webkit-app-region: no-drag; }
+#winbtns button { border: 0; background: none; width: 28px; height: 26px; padding: 0; border-radius: 7px; color: var(--muted); font-size: 13px; line-height: 1; }
+#winbtns button:hover { background: var(--panel); color: var(--text); } #winbtns button.danger:hover { background: #5a2229; color: #fff; }
+#winbtns button.on { color: var(--memo); }
+#indicators { display: flex; gap: 4px; -webkit-app-region: no-drag; }
+.ind { display: none; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; padding: 2px 7px; border-radius: 999px; background: var(--ok); color: var(--ink); animation: fadein .2s; }
+.ind.on { display: inline-block; } #ind-screen { background: var(--memo); } #ind-control { background: var(--mark); color: #fff; } #ind-paused { background: var(--line); color: var(--text); }
+@keyframes fadein { from { opacity: 0; transform: translateY(-3px); } }
+#peek { display: none; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 2px; }
+#speaker.off { opacity: .4; }
+.tab { animation: fadein .18s ease-out; }
+
+/* compact bar: title row, last answer, input */
+body.compact nav, body.compact #status, body.compact #messages, body.compact #modes, body.compact #hint, body.compact #attachments, body.compact #walk, body.compact #crew { display: none !important; }
+body.compact header { border-bottom: 0; } body.compact .tab { padding: 4px 10px 10px; gap: 8px; overflow: hidden; }
+body.compact .tab:not(#tab-chat) { display: none !important; } body.compact #tab-chat { display: flex !important; }
+body.compact #peek { display: block; min-height: 20px; }
+body.compact #text { height: 38px; } body.compact #send { height: 38px; }
+#mic.armed { border-color: var(--ok); color: var(--ok); }

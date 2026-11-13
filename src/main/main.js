@@ -1,33 +1,22 @@
 // MemoBrOS main process: windows, hotkeys and the orchestration of the five abilities.
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, dialog, nativeImage, screen, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, clipboard, globalShortcut, ipcMain, dialog, nativeImage, screen, session, systemPreferences } = require('electron');
 
 if (process.env.MEMOBROS_USER_DATA) app.setPath('userData', process.env.MEMOBROS_USER_DATA);
 
 // Platform setup. Linux: run through X11 (XWayland on Wayland sessions), which the always-on-top overlay,
 // global hotkeys and synthetic input need. Windows: an app id so notifications and the taskbar group correctly.
-// The display backend has to be chosen on the real command line: switching it from JavaScript is too late on a
-// Wayland session and leaves windows that never paint. `npm start` passes --ozone-platform=x11; when the flag is
-// missing on a Wayland session (an installed build, a bare `electron .`), relaunch once with it.
-let relaunching = false;
-if (process.platform === 'linux') {
-  const flagged = process.argv.some((a) => a.startsWith('--ozone-platform='));
-  const wayland = process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY;
-  if (!flagged && wayland) {
-    relaunching = true;
-    app.relaunch({ args: [...process.argv.slice(1), `--ozone-platform=${process.env.MEMOBROS_DISPLAY === 'wayland' ? 'wayland' : 'x11'}`] });
-    app.exit(0);
-  }
-  // The app draws a chat panel and a few vector shapes; it does not need the GPU. On some drivers the GPU process
-  // crashes under XWayland, so render in software unless MEMOBROS_GPU=1 asks otherwise.
-  if (process.env.MEMOBROS_GPU !== '1') app.disableHardwareAcceleration();
-}
-if (process.platform === 'win32') app.setAppUserModelId('com.memobros.app');
-const startHidden = process.argv.includes('--hidden'); // used by "start with the system"
-
-
 const store = require('./store');
+// Display backend and what it allows (native Wayland preferred on Wayland sessions). See platform.js.
+const env = require('./platform').setup(store.getSettings().displayBackend === 'x11');
+const { caps } = env;
+const relaunching = env.relaunching;
+const startHidden = process.argv.includes('--hidden'); // used by "start with the system"
+// `memobros --toggle` and friends control the running app (see the second-instance handler below).
+const CONTROL_FLAGS = ['--toggle', '--show', '--hide', '--quit', '--pause', '--resume'];
+const controlFlag = process.argv.find((a) => CONTROL_FLAGS.includes(a));
+
 const shots = require('./screen');
 const input = require('./input');
 const stt = require('./stt');
@@ -36,6 +25,8 @@ const llm = require('./llm');
 const mcp = require('./mcp');
 const web = require('./webagent');
 const routines = require('./routines');
+const wake = require('./wake');
+const apps = require('./apps');
 const crew = require('./crew');
 const gateway = require('./gateway');
 
@@ -49,6 +40,10 @@ let attachments = [];       // [{ name, path }]
 let pinnedSkillId = null;
 let dictationQueue = Promise.resolve();
 let agentRunning = false;
+let paused = false;          // "assistant paused": no hotkeys, no listening, no routines; the window still works
+let wakeOn = false;          // the wake word is armed right now
+let hotkeyReport = { failed: [] };
+const activity = { mic: false, screen: false, control: false }; // what MemoBrOS is doing to the machine right now
 
 const toPanel = (event) => panel && !panel.isDestroyed() && panel.webContents.send('memo:event', event);
 const toOverlay = (event) => overlay && !overlay.isDestroyed() && overlay.webContents.send('memo:event', event);
@@ -59,6 +54,7 @@ const pinnedSkill = () => store.listSkills().find((s) => s.id === pinnedSkillId)
 
 // ---- windows ------------------------------------------------------------------
 function createOverlay() {
+  if (!caps.overlay) return; // native Wayland: no window may sit above the others or follow the pointer
   const d = shots.activeDisplay();
   overlay = new BrowserWindow({
     ...d.bounds, transparent: true, frame: false, resizable: false, movable: false, focusable: false, skipTaskbar: true,
@@ -85,36 +81,81 @@ function createOverlay() {
   }, 33);
 }
 
+// The panel is a frameless floating window with two sizes: a compact bar and the full interface.
+const SIZE = { compact: { width: 470, height: 132 }, expanded: { width: 420, height: 640 } };
+function panelBounds(compact) {
+  const w = store.getSettings().window || {};
+  const size = compact ? SIZE.compact : { width: w.width || SIZE.expanded.width, height: w.height || SIZE.expanded.height };
+  const area = (w.right != null ? screen.getDisplayNearestPoint({ x: w.right - 10, y: w.bottom - 10 }) : screen.getPrimaryDisplay()).workArea;
+  // The bottom-right corner stays put when the window changes size, so the input bar does not jump.
+  const right = Math.min(Math.max(w.right ?? area.x + area.width - 20, area.x + size.width), area.x + area.width);
+  const bottom = Math.min(Math.max(w.bottom ?? area.y + area.height - 20, area.y + size.height), area.y + area.height);
+  return { x: right - size.width, y: bottom - size.height, ...size };
+}
+let saveTimer = null, resizing = false;
+function rememberPanel() {
+  if (resizing || !panel || panel.isDestroyed()) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    if (!panel || panel.isDestroyed()) return;
+    const b = panel.getBounds(), w = store.getSettings().window || {};
+    store.saveSettings({ window: { ...w, right: b.x + b.width, bottom: b.y + b.height, ...(w.compact ? {} : { width: b.width, height: b.height }) } });
+  }, 400);
+}
+function setCompact(compact) {
+  store.saveSettings({ window: { ...(store.getSettings().window || {}), compact: !!compact } });
+  resizing = true;
+  clearTimeout(saveTimer);
+  // Size limits first, then the new bounds, then lock the compact bar: X11 keeps the old width otherwise.
+  panel.setResizable(true);
+  panel.setMinimumSize(compact ? SIZE.compact.width : 340, compact ? SIZE.compact.height : 420);
+  panel.setBounds(panelBounds(compact));
+  if (compact) panel.setResizable(false);
+  setTimeout(() => { resizing = false; rememberPanel(); }, 300);
+  toPanel({ type: 'window', compact: !!compact });
+}
+
 function createPanel() {
-  const { workArea } = screen.getPrimaryDisplay();
+  const compact = !!(store.getSettings().window || {}).compact;
   panel = new BrowserWindow({
-    width: 400, height: 620, x: workArea.x + workArea.width - 420, y: workArea.y + workArea.height - 640,
-    title: 'MemoBrOS', show: false, alwaysOnTop: true, minWidth: 340, minHeight: 420, autoHideMenuBar: true,
-    icon: icon(64),
+    ...panelBounds(compact), title: 'MemoBrOS', show: false, frame: false, alwaysOnTop: true, resizable: !compact, fullscreenable: false, maximizable: false,
+    minWidth: compact ? SIZE.compact.width : 340, minHeight: compact ? SIZE.compact.height : 420, backgroundColor: '#1b1915', icon: icon(64),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false },
   });
+  panel.setAlwaysOnTop(true, 'floating');
   panel.loadFile(path.join(__dirname, '..', 'renderer', 'panel.html'));
+  // Closing the window only hides it: the assistant keeps running until "Quit" is chosen.
   panel.on('close', (e) => { if (!app.isQuitting) { e.preventDefault(); panel.hide(); } });
+  panel.on('move', rememberPanel); panel.on('resize', rememberPanel);
+  panel.on('show', refreshTray); panel.on('hide', refreshTray);
   panel.once('ready-to-show', () => { if (!startHidden) panel.show(); });
 }
-const togglePanel = () => (panel.isVisible() ? panel.hide() : panel.show());
+const showPanel = () => { panel.show(); panel.focus(); };
+const togglePanel = () => (panel.isVisible() ? panel.hide() : showPanel());
+const quitApp = () => { app.isQuitting = true; app.quit(); };
 
 const icon = (size) => nativeImage.createFromPath(path.join(__dirname, '..', '..', 'assets', 'icon.png')).resize({ width: size, height: size, quality: 'best' });
 
+// Tray icon (a StatusNotifierItem on Linux; GNOME shows it through its AppIndicator support). Everything it offers
+// is also reachable from the window's own buttons and from `memobros --toggle / --quit`, in case no tray is shown.
+function refreshTray() {
+  if (!tray || tray.isDestroyed()) return;
+  const s = store.getSettings();
+  tray.setToolTip(`MemoBrOS — ${paused ? 'paused' : wakeOn ? `listening for "${s.wake.word}"` : 'ready'}`);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: panel && panel.isVisible() ? 'Hide MemoBrOS' : 'Show MemoBrOS', click: togglePanel },
+    { type: 'separator' },
+    { label: paused ? 'Resume assistant' : 'Pause assistant', click: () => setPaused(!paused) },
+    { label: `Wake word "${s.wake.word}"`, type: 'checkbox', checked: !!s.wake.enabled, enabled: !paused, click: (item) => setWake(item.checked) },
+    { type: 'separator' },
+    { label: 'Quit MemoBrOS completely', click: quitApp },
+  ]));
+}
 function createTray() {
   try {
     tray = new Tray(icon(process.platform === 'darwin' ? 18 : 32));
-    const hk = store.getSettings().hotkeys;
-    tray.setToolTip('MemoBrOS');
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Open panel', accelerator: hk.panel, click: () => panel.show() },
-      { label: 'Ask about my screen', accelerator: hk.ask, click: () => toggleListen('ask') },
-      { label: 'Agent mode', accelerator: hk.agent, click: () => toggleListen('agent') },
-      { label: 'Dictate', accelerator: hk.dictate, click: () => toggleListen('dictate') },
-      { type: 'separator' },
-      { label: 'Quit MemoBrOS', click: () => { app.isQuitting = true; app.quit(); } },
-    ]));
     tray.on('click', togglePanel);
+    refreshTray();
   } catch (e) { console.warn('Tray unavailable:', e.message); }
 }
 
@@ -124,14 +165,61 @@ function registerHotkeys() {
   const hk = store.getSettings().hotkeys;
   const failed = [];
   const reg = (name, fn) => { try { if (!globalShortcut.register(hk[name], fn)) failed.push(hk[name]); } catch { failed.push(hk[name]); } };
-  reg('ask', () => toggleListen('ask'));
-  reg('agent', () => toggleListen('agent'));
-  reg('dictate', () => toggleListen('dictate'));
-  reg('next', () => walkMove(1));
   reg('panel', togglePanel);
-  reg('approve', () => resolveConfirm(true));
-  reg('stop', stopEverything);
+  if (!paused) {
+    reg('ask', () => toggleListen('ask'));
+    reg('agent', () => toggleListen('agent'));
+    reg('dictate', () => toggleListen('dictate'));
+    reg('next', () => walkMove(1));
+    reg('approve', () => resolveConfirm(true));
+    reg('stop', stopEverything);
+  }
+  hotkeyReport = { failed, via: caps.hotkeys, fallback: controlCommand('--toggle') };
   return failed;
+}
+// The command that controls the running app from outside, e.g. bound to a key in GNOME Settings → Keyboard.
+function controlCommand(flag) {
+  if (process.env.APPIMAGE) return `"${process.env.APPIMAGE}" ${flag}`;
+  return app.isPackaged ? `memobros ${flag}` : `"${process.execPath}" "${app.getAppPath()}" ${flag}`;
+}
+function control(flag) {
+  if (flag === '--quit') return quitApp();
+  if (flag === '--hide') return panel.hide();
+  if (flag === '--toggle') return togglePanel();
+  if (flag === '--pause') return setPaused(true);
+  if (flag === '--resume') return setPaused(false);
+  return showPanel();
+}
+
+// ---- pause, permissions, indicators -----------------------------------------------------------
+// Pausing stops what is running and makes the assistant deaf and idle; the window and "show/hide" still work.
+function setPaused(value) {
+  paused = !!value;
+  if (paused) stopEverything();
+  routines.pause(paused);
+  registerHotkeys();
+  syncWake();
+  status('idle');
+  pushState(); refreshTray();
+}
+
+const PERMISSIONS = {
+  screen: ['Let MemoBrOS look at your screen?', 'When you ask a question or start a task, MemoBrOS takes a screenshot and sends it to the model you chose in Settings. It never captures in the background.'],
+  microphone: ['Let MemoBrOS use the microphone?', 'Audio is recorded only while the mic indicator is on. With on-device speech recognition it never leaves this computer.'],
+  control: ['Let MemoBrOS use the mouse and keyboard?', 'Agent mode clicks and types in other apps, and dictation types what you say. Each agent task still shows its plan and waits for your approval.'],
+};
+// Each capability is off until the user allows it, the first time it is needed. Changeable in Settings → Permissions.
+async function allowed(name) {
+  if (store.getSettings().permissions[name]) return true;
+  const [title, text] = PERMISSIONS[name];
+  if (!(await confirm(title, `${text}\n\nYou can change this later in Settings → Permissions.`))) return false;
+  store.saveSettings({ permissions: { [name]: true } });
+  pushState();
+  return true;
+}
+function setActivity(patch) {
+  Object.assign(activity, patch);
+  toPanel({ type: 'activity', activity });
 }
 
 // ---- running requests ---------------------------------------------------------
@@ -160,15 +248,20 @@ function stopEverything() {
 }
 
 async function captureFresh() {
+  if (!(await allowed('screen'))) throw new Error('Screen capture is turned off, so I can\'t see your screen. Allow it in Settings → Permissions.');
   const display = shots.activeDisplay();
-  overlay.setBounds(display.bounds);
+  if (overlay && !overlay.isDestroyed()) overlay.setBounds(display.bounds);
   toOverlay({ type: 'clear' });
   await input.sleep(120); // let old annotations leave the screen before the screenshot
-  return shots.capture(display);
+  setActivity({ screen: true });
+  try { return await shots.capture(display); } finally { setTimeout(() => setActivity({ screen: false }), 1200); }
 }
 
 const hooksFor = (shot) => ({
-  point: ({ x, y, label }) => toOverlay({ type: 'point', ...shots.toOverlay(shot, x, y), label }),
+  point: ({ x, y, label }) => {
+    if (!caps.overlay) return toPanel({ type: 'message', role: 'action', text: `Look for: ${label || 'the highlighted control'}` }); // nothing can be drawn over other apps here
+    return toOverlay({ type: 'point', ...shots.toOverlay(shot, x, y), label });
+  },
   draw: (shapes) => toOverlay({
     type: 'draw',
     shapes: shapes.map((s) => {
@@ -194,6 +287,7 @@ function doAsk(text) {
         startWalkthrough: (w) => { next = () => startWalkthrough(w); },
         startAgent: (t) => { next = () => doAgent(t, true); },
         startCrew: (goal) => { next = () => doCrew(goal, true); },
+        openApp: (name) => `Opened ${apps.open(name)}.`,
         createRoutine: (draft) => describeRoutine(routines.add(draft)),
         runBackground: (t) => {
           setImmediate(() => routines.runOnce(t).catch((e) => toPanel({ type: 'message', role: 'error', text: e.message })));
@@ -291,6 +385,12 @@ async function execAction(name, i, shot, signal) {
 async function doAgent(taskText, quiet = false, opts = {}) {
   if (!taskText.trim()) { say('What should I do? Say "memo agent" followed by the task.'); return { status: 'error', summary: 'No task given.' }; }
   if (!quiet) toPanel({ type: 'message', role: 'user', text: taskText, tag: opts.routine ? `Routine · ${opts.routine.name}` : 'Agent' });
+  if (!caps.control) {
+    const why = 'On native Wayland I can\'t move the mouse or type in other apps yet. I can still answer about your screen, run background tasks, and open apps. To control X11 apps, switch the display mode to X11 in Settings → System.';
+    say(why);
+    return { status: 'error', summary: why };
+  }
+  if (!(await allowed('control'))) { say('Okay, I won\'t control the mouse and keyboard.'); return { status: 'skipped', summary: 'Mouse and keyboard control is not allowed.' }; }
   let result = { status: 'stopped', summary: 'Stopped before finishing.' };
   await run(async (signal) => {
     status('thinking', 'Planning');
@@ -301,7 +401,7 @@ async function doAgent(taskText, quiet = false, opts = {}) {
     toPanel({ type: 'say', text: "Here's my plan. Approve it and I'll get going." });
     const approved = await confirm(opts.routine ? `Routine "${opts.routine.name}" is due. Approve this plan?` : 'Approve this plan?', planText, opts.routine ? { notify: true, timeoutMs: 15 * 60 * 1000 } : {});
     if (!approved) { result = { status: 'skipped', summary: 'The plan was not approved, so nothing was touched.' }; say("Okay, I won't touch anything."); return; }
-    agentRunning = true;
+    agentRunning = true; setActivity({ control: true });
     panel.hide(); // hand keyboard focus back to the user's app
     await input.sleep(400);
     status('acting', 'Agent running');
@@ -323,7 +423,7 @@ async function doAgent(taskText, quiet = false, opts = {}) {
       toPanel({ type: 'say', text: summary });
       toOverlay({ type: 'caption', text: summary });
     } finally {
-      agentRunning = false;
+      agentRunning = false; setActivity({ control: false });
       if (!panel.isVisible()) panel.showInactive();
     }
   });
@@ -380,8 +480,8 @@ function dictateSegment(pcm) {
       let text = await stt.transcribe(pcm, sttProgress);
       if (!text) return;
       if (store.getSettings().dictationPolish && brain.hasKey()) text = await brain.polish(text);
-      await input.paste(`${text} `);
-      toPanel({ type: 'message', role: 'dictation', text });
+      if (caps.control && (await allowed('control'))) { await input.paste(`${text} `); toPanel({ type: 'message', role: 'dictation', text }); }
+      else { await clipboard.writeText(text); toPanel({ type: 'message', role: 'dictation', text: `${text}  (copied — press Ctrl+V where you want it)` }); }
     } catch (e) { toPanel({ type: 'message', role: 'error', text: e.message || String(e) }); }
   });
   return dictationQueue;
@@ -392,13 +492,57 @@ const sttProgress = (pct) => status('thinking', `Downloading speech model… ${p
 function setListening(mode) {
   listening = mode;
   toPanel({ type: 'listen', mode });
+  setActivity({ mic: !!mode || wakeOn });
   status(mode ? (mode === 'dictate' ? 'dictating' : 'listening') : task ? 'thinking' : 'idle', mode === 'agent' ? 'Agent — what should I do?' : '');
 }
-function toggleListen(mode) {
+async function toggleListen(mode) {
   if (listening) { const was = listening; setListening(null); if (was === mode) return; }
+  if (paused) return toPanel({ type: 'message', role: 'error', text: 'The assistant is paused. Resume it first.' });
+  if (!(await allowed('microphone'))) return;
   if (mode === 'dictate' && panel.isFocused()) panel.hide(); // give focus back to the field being dictated into
   if (mode !== 'dictate') { if (task) task.abort.abort(); toPanel({ type: 'shutup' }); }
   setListening(mode);
+}
+
+// ---- wake word ("ARVI") -------------------------------------------------------------------------
+// While armed, the panel cuts the microphone signal into spoken segments and hands each one over. Segments are
+// transcribed on this machine only; one that does not start with the wake word is dropped right here.
+function syncWake() {
+  const s = store.getSettings();
+  wakeOn = !!s.wake.enabled && !paused && !!s.permissions.microphone;
+  toPanel({ type: 'wake', on: wakeOn, word: s.wake.word });
+  setActivity({ mic: !!listening || wakeOn });
+  refreshTray();
+}
+async function setWake(enabled) {
+  if (enabled && !(await allowed('microphone'))) enabled = false;
+  store.saveSettings({ wake: { enabled: !!enabled } });
+  syncWake(); pushState();
+}
+async function heard(pcm) {
+  if (!wakeOn || listening) return;
+  const s = store.getSettings();
+  let text = '';
+  try { text = await stt.transcribe(pcm, sttProgress, { localOnly: true }); }
+  catch (e) { await setWake(false); toPanel({ type: 'message', role: 'error', text: `Wake word turned off: ${e.message || e}` }); return; }
+  const hit = wake.match(text, s.wake.word, String(s.wake.aliases || '').split(',').map((x) => x.trim()).filter(Boolean));
+  if (!hit) return; // not addressed to the assistant: forget it
+  const cmd = wake.interpret(hit.command);
+  const spanish = wake.languageOf(hit.command || text) === 'es';
+  toPanel({ type: 'message', role: 'user', text: hit.command || s.wake.word, tag: s.wake.word });
+  switch (cmd.kind) {
+    case 'listen': toggleListen('ask'); return;
+    case 'show': return showPanel();
+    case 'hide': return panel.hide();
+    case 'stop': return stopEverything();
+    case 'mute': await setWake(false); return say(spanish ? 'Micrófono apagado.' : 'Microphone off.');
+    // A spoken approval only counts when it is addressed to the assistant by name.
+    case 'yes': case 'no': return pendingConfirm ? resolveConfirm(cmd.kind === 'yes') : undefined;
+    case 'open':
+      try { return say(`${spanish ? 'Abriendo' : 'Opening'} ${apps.open(cmd.app)}.`); }
+      catch (e) { route(hit.command, 'ask'); return; } // not an installed app: let the model work out what was meant
+    default: route(cmd.text, 'ask'); // handled like any typed request; not awaited, so listening continues
+  }
 }
 
 const YES = /^\W*(yes|yeah|yep|sure|ok|okay|approve|go ahead|do it|s[ií]|dale|claro|adelante|oui|ja)\b/i;
@@ -412,6 +556,7 @@ const RECURRING = /^\W*(every|each|cada|todos los|todas las|tous les|toutes les|
 function route(text, mode) {
   text = String(text || '').trim();
   if (!text) return;
+  if (paused) return toPanel({ type: 'message', role: 'error', text: 'The assistant is paused. Resume it to continue.' });
   if (pendingConfirm && (YES.test(text) || NO.test(text)) && text.length < 30) return resolveConfirm(YES.test(text));
   if (walkthrough && text.length < 30) {
     if (NEXT.test(text)) return walkMove(1);
@@ -446,6 +591,7 @@ function applyAutostart() {
 function state() {
   const s = store.getSettings();
   return {
+    display: env.display, session: env.session, caps, paused, wakeOn, activity, hotkeys: hotkeyReport, compact: !!(s.window || {}).compact,
     settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
     keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
     routines: routines.view(), mcp: mcp.status(), codeAgent: crew.codeAgent(), gateway: gateway.status(), sharedFolders: store.sharedFolders(),
@@ -464,6 +610,7 @@ const handlers = {
     if (sttKey !== undefined) store.setSecret('stt', sttKey.trim());
     const failed = registerHotkeys();
     applyAutostart();
+    syncWake();
     return { ...state(), failedHotkeys: failed };
   },
   request: ({ text, mode }) => { route(text, mode); },
@@ -471,6 +618,7 @@ const handlers = {
   'listen:ended': () => { if (listening) setListening(null); },
   'audio:segment': async ({ pcm, mode, final }) => {
     const samples = new Float32Array(pcm);
+    if (mode === 'wake') { await heard(samples); return; }
     if (mode === 'dictate') { await dictateSegment(samples); return; }
     if (final && listening) setListening(null);
     status('thinking', 'Transcribing');
@@ -508,6 +656,13 @@ const handlers = {
   'skill:pin': ({ id }) => { pinnedSkillId = pinnedSkillId === id ? null : id; return state(); },
   'memory:add': ({ note }) => { if (note.trim()) store.addMemory(note); return state(); },
   'memory:delete': ({ id }) => { store.deleteMemory(id); return state(); },
+  // window and process control
+  'window:compact': ({ compact }) => { setCompact(compact); },
+  'window:hide': () => { panel.hide(); },
+  'app:quit': () => { quitApp(); },
+  'assistant:pause': ({ paused: p }) => { setPaused(p); return state(); },
+  'wake:set': async ({ enabled }) => { await setWake(enabled); return state(); },
+  'permission:set': ({ name, value }) => { if (name in PERMISSIONS) store.saveSettings({ permissions: { [name]: !!value } }); syncWake(); return state(); },
   'chat:reset': () => { brain.resetHistory(); walkStop(); },
   'models:list': ({ provider }) => llm.listModels(provider),
   // routines
@@ -555,10 +710,13 @@ ipcMain.handle('memo', async (_e, channel, payload) => {
 });
 
 // ---- app lifecycle --------------------------------------------------------------------------
-if (relaunching) { /* this process is exiting; the relaunched one does the work */ } else if (!app.requestSingleInstanceLock()) app.quit();
+if (relaunching) { /* this process is exiting; the relaunched one does the work */ }
+else if (!app.requestSingleInstanceLock()) app.quit(); // the running instance receives our arguments and acts on them
+else if (controlFlag && !['--show', '--toggle'].includes(controlFlag)) app.quit(); // "--quit/--hide/--pause" with nothing running: nothing to do
 else {
-  app.on('second-instance', () => panel && panel.show());
+  app.on('second-instance', (_e, argv) => { if (panel) control(argv.find((a) => CONTROL_FLAGS.includes(a)) || '--show'); });
   app.whenReady().then(async () => {
+    Menu.setApplicationMenu(null); // a floating assistant has no File / Edit bar
     session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'media'));
     session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media');
     if (process.platform === 'darwin') systemPreferences.askForMediaAccess('microphone').catch(() => {});
@@ -579,11 +737,12 @@ else {
     gateway.init(pushState);
     mcp.sync().then(pushState).catch((e) => console.error('MCP', e));
     const failed = registerHotkeys();
-    if (failed.length) panel.webContents.once('did-finish-load', () => toPanel({ type: 'message', role: 'error', text: `These hotkeys are taken by another app: ${failed.join(', ')}. Change them in Settings.` }));
+    panel.webContents.once('did-finish-load', () => syncWake());
+    if (failed.length) panel.webContents.once('did-finish-load', () => toPanel({ type: 'message', role: 'error', text: `These shortcuts could not be registered: ${failed.join(', ')}. See Settings → Shortcuts for another way to bind them. Change them in Settings.` }));
   });
   app.on('window-all-closed', () => {});
   app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); gateway.stop(); });
   app.on('before-quit', () => { app.isQuitting = true; if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 
-if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };
+if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };

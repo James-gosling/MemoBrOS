@@ -28,6 +28,7 @@ function addMessage({ role, text, tag, routineFrom }) {
   const m = h('div', { className: `msg ${role}` });
   if (tag) m.append(h('span', { className: 'tag', textContent: tag }));
   m.append(text);
+  if (role === 'memo' || role === 'error') $('peek').textContent = text;
   if (routineFrom) { // chat-to-routine: one click turns this finished agent task into a scheduled routine
     m.append(h('button', { className: 'make-routine', textContent: '↻ Repeat this on a schedule', onclick: async (e) => {
       e.target.disabled = true;
@@ -134,13 +135,28 @@ function renderStatus({ kind, text }) {
 }
 
 // ---- text to speech ------------------------------------------------------------------
+// Spanish or English? Enough to pick a voice for an answer.
+function languageOf(text) {
+  const t = ` ${String(text).toLowerCase()} `;
+  const es = (t.match(/[ñáéíóú¿¡]| (el|la|los|las|que|de|es|en|una?|para|por|con|está|tu|sí|aquí|haz|abre|listo|hecho|no pude|ya) |[a-z]+(ando|iendo|ción|ciones) /g) || []).length;
+  const en = (t.match(/ (the|is|are|you|your|to|of|and|it|this|that|here|click|open|with|for) /g) || []).length;
+  return es > en ? 'es' : 'en';
+}
+function voiceFor(text) {
+  const voices = speechSynthesis.getVoices();
+  const chosen = voices.find((v) => v.name === S.settings.voice);
+  const lang = languageOf(text);
+  if (chosen && chosen.lang.toLowerCase().startsWith(lang)) return chosen;
+  const wanted = (S.settings.voiceLanguages || []).filter((l) => l.toLowerCase().startsWith(lang));
+  for (const tag of wanted) { const v = voices.find((x) => x.lang.replace('_', '-').toLowerCase() === tag.toLowerCase()); if (v) return v; }
+  return voices.find((v) => v.lang.toLowerCase().startsWith(lang)) || chosen || null;
+}
 function speak(text) {
   if (!S.settings.speak || !window.speechSynthesis) return;
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  const voices = speechSynthesis.getVoices();
-  const lang = S.settings.language;
-  u.voice = voices.find((v) => v.name === S.settings.voice) || (lang !== 'auto' && voices.find((v) => v.lang.toLowerCase().startsWith(lang))) || null;
+  u.voice = voiceFor(text);
+  if (u.voice) u.lang = u.voice.lang;
   u.rate = S.settings.speechRate || 1;
   speechSynthesis.speak(u);
 }
@@ -156,7 +172,7 @@ async function startRec(recMode) {
   if (rec) await stopRec(false);
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); }
-  catch (e) { addMessage({ role: 'error', text: `Microphone unavailable: ${e.message}. You can still type.` }); call('listen:ended'); return; }
+  catch (e) { addMessage({ role: 'error', text: `Microphone unavailable: ${e.message}. You can still type.` }); if (recMode === 'wake') { wakeArmed = false; call('wake:set', { enabled: false }); } else call('listen:ended'); return; }
   const ctx = new AudioContext({ sampleRate: RATE });
   const source = ctx.createMediaStreamSource(stream);
   const node = ctx.createScriptProcessor(FRAME, 1, 1);
@@ -176,12 +192,17 @@ async function startRec(recMode) {
     if (r.speechMs || r.chunks.length < 2) r.chunks.push(data); else r.chunks = [r.chunks[r.chunks.length - 1], data]; // keep a little lead-in
     r.totalMs += FRAME_MS;
     const segMs = r.chunks.length * FRAME_MS;
-    if (r.mode === 'dictate') {
+    if (r.mode === 'wake') {
+      // Wake-word listening: hand over each spoken phrase; skip anything heard while Memo itself is talking.
+      if (window.speechSynthesis && speechSynthesis.speaking) { r.chunks = []; r.speechMs = 0; r.silenceMs = 0; }
+      else if (r.speechMs >= 300 && (r.silenceMs >= 600 || segMs >= 12000)) flush(r, false);
+    } else if (r.mode === 'dictate') {
       if (r.speechMs >= 250 && (r.silenceMs >= 700 || segMs >= 25000)) flush(r, false);
-    } else if ((r.speechMs >= 250 && r.silenceMs >= 1500) || segMs >= 45000) stopRec(true);
-    else if (!r.speechMs && r.totalMs >= 9000) stopRec(true);
+    } else if ((r.speechMs >= 250 && r.silenceMs >= 1500) || segMs >= 45000) endRec(true);
+    else if (!r.speechMs && r.totalMs >= 9000) endRec(true);
   };
-  $('mic').classList.add('on');
+  $('mic').classList.toggle('on', recMode !== 'wake');
+  $('mic').classList.toggle('armed', recMode === 'wake');
 }
 
 function flush(r, final) {
@@ -205,8 +226,38 @@ async function stopRec(send) {
   r.ctx.close();
   $('mic').classList.remove('on');
   const sent = send && flush(r, true);
-  if (!sent || r.mode === 'dictate') call('listen:ended');
+  $('mic').classList.remove('armed');
+  if (r.mode !== 'wake' && (!sent || r.mode === 'dictate')) call('listen:ended');
 }
+
+// The wake word keeps a quiet recording running whenever nothing else is using the microphone.
+let wakeArmed = false;
+function ensureWake() { if (wakeArmed && !rec) startRec('wake'); else if (!wakeArmed && rec && rec.mode === 'wake') stopRec(false); }
+const endRec = (send) => stopRec(send).then(ensureWake);
+
+// ---- window chrome ------------------------------------------------------------------------
+function renderChrome() {
+  document.body.classList.toggle('compact', !!S.compact);
+  $('win-compact').textContent = S.compact ? '▢' : '▁';
+  $('win-compact').title = S.compact ? 'Expand' : 'Compact bar';
+  $('win-pause').textContent = S.paused ? '▶' : '❙❙';
+  $('win-pause').title = S.paused ? 'Resume the assistant' : 'Pause the assistant (stops listening, tasks and routines)';
+  $('win-pause').classList.toggle('on', !!S.paused);
+  $('speaker').classList.toggle('off', !S.settings.speak);
+  renderActivity(S.activity);
+}
+function renderActivity(a) {
+  $('ind-mic').classList.toggle('on', !!a.mic); $('ind-screen').classList.toggle('on', !!a.screen); $('ind-control').classList.toggle('on', !!a.control);
+  $('ind-mic').textContent = S.wakeOn && !rec?.mode?.match(/ask|agent|dictate/) ? `mic · ${S.settings.wake.word}` : 'mic';
+  $('ind-paused').classList.toggle('on', !!S.paused);
+}
+$('win-compact').addEventListener('click', () => call('window:compact', { compact: !S.compact }));
+$('win-hide').addEventListener('click', () => call('window:hide'));
+$('win-quit').addEventListener('click', () => call('app:quit'));
+$('win-pause').addEventListener('click', async () => { S = await call('assistant:pause', { paused: !S.paused }); renderChrome(); });
+$('speaker').addEventListener('click', async () => { S = await call('settings:save', { settings: { speak: !S.settings.speak } }); if (!S.settings.speak) shutUp(); renderChrome(); $('set-speak').checked = S.settings.speak; });
+// Anything that needs the full interface (approvals, walkthroughs, crew progress) opens it.
+const needFull = () => { if (S.compact) call('window:compact', { compact: false }); };
 
 // ---- skills -----------------------------------------------------------------------------
 function renderSkills() {
@@ -350,6 +401,14 @@ $('mcp-form').addEventListener('submit', async (e) => {
   } catch (err) { $('mcp-note').textContent = clean(err); }
 });
 
+function renderPermissions() {
+  for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).checked = !!S.settings.permissions[k];
+  $('perm-control').disabled = !S.caps.control;
+  $('set-wake').checked = !!S.settings.wake.enabled;
+}
+for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).addEventListener('change', async (e) => { S = await call('permission:set', { name: k, value: e.target.checked }); renderPermissions(); renderChrome(); });
+$('set-wake').addEventListener('change', async (e) => { S = await call('wake:set', { enabled: e.target.checked }); renderPermissions(); renderChrome(); });
+
 // ---- settings ---------------------------------------------------------------------------
 function fillVoices() {
   const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
@@ -373,6 +432,16 @@ function renderSettings() {
   $('stt-cloud').hidden = s.sttProvider !== 'cloud';
   $('set-lang').replaceChildren(...Object.entries(LANGS).map(([value, textContent]) => h('option', { value, textContent })));
   $('set-lang').value = s.language;
+  renderPermissions();
+  $('set-wake-word').value = s.wake.word; $('set-wake-aliases').value = s.wake.aliases || '';
+  $('set-voice-langs').value = (s.voiceLanguages || []).join(', ');
+  $('display-row').hidden = S.platform !== 'linux'; $('set-display').value = s.displayBackend || 'auto';
+  $('display-note').textContent = S.platform !== 'linux' ? '' : `Running now: ${S.display === 'wayland' ? 'native Wayland' : S.session === 'wayland' ? 'X11 through XWayland' : 'X11'}. ${S.caps.overlay ? '' : 'On native Wayland the on-screen cursor overlay and mouse/keyboard control are not available; dictation copies to the clipboard instead.'}${S.caps.x11Only ? 'Pointing, screen capture and control reach X11 apps only.' : ''}`;
+  const hk = S.hotkeys;
+  $('hotkey-report').replaceChildren(
+    hk.failed.length ? `Not registered: ${hk.failed.join(', ')}. ` : 'All shortcuts registered. ',
+    hk.via === 'portal' ? 'On Wayland they go through the desktop\'s shortcuts portal, which asks you to approve them. ' : hk.via === 'x11' && S.session === 'wayland' ? 'Under XWayland they only fire while an X11 window has focus. ' : '',
+    'To bind show/hide yourself: GNOME Settings → Keyboard → Custom Shortcuts, command: ', h('kbd', { textContent: hk.fallback }));
   $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-code-validate').value = s.codeAgent.validate || ''; $('set-code-protected').value = (s.codeAgent.protected || []).join(', ');
   $('set-gateway-cmd').value = s.crewGateway.command; renderGateway();
   $('set-autostart').checked = !!s.launchAtLogin;
@@ -417,7 +486,9 @@ $('settings-form').addEventListener('submit', async (e) => {
       sttBaseUrl: $('set-stt-url').value.trim(), sttCloudModel: $('set-stt-model').value.trim(), language: $('set-lang').value,
       codeAgent: { command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), validate: $('set-code-validate').value.trim(), protected: $('set-code-protected').value.split(',').map((x) => x.trim()).filter(Boolean) },
       crewGateway: { command: $('set-gateway-cmd').value.trim() },
-      launchAtLogin: $('set-autostart').checked,
+      launchAtLogin: $('set-autostart').checked, displayBackend: $('set-display').value,
+      wake: { word: $('set-wake-word').value.trim() || 'ARVI', aliases: $('set-wake-aliases').value.trim() },
+      voiceLanguages: $('set-voice-langs').value.split(',').map((x) => x.trim()).filter(Boolean),
       speak: $('set-speak').checked, voice: $('set-voice').value, dictationPolish: $('set-polish').checked, confirmEachAction: $('set-confirm-each').checked,
       hotkeys: Object.fromEntries(Object.keys(HOTKEY_LABELS).map((k) => [k, $(`hk-${k}`).value.trim()])),
     },
@@ -434,7 +505,7 @@ $('settings-form').addEventListener('submit', async (e) => {
 
 // ---- wiring -----------------------------------------------------------------------------
 function renderAll() {
-  renderSettings(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderAttachments(S.attachments); renderWalk(S.walk); setMode(mode); renderEmpty();
+  renderChrome(); renderSettings(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderAttachments(S.attachments); renderWalk(S.walk); setMode(mode); renderEmpty();
 }
 
 window.memo.on((e) => {
@@ -442,11 +513,14 @@ window.memo.on((e) => {
   else if (e.type === 'say') speak(e.text);
   else if (e.type === 'shutup') shutUp();
   else if (e.type === 'status') renderStatus(e);
-  else if (e.type === 'walk') renderWalk(e.walk);
-  else if (e.type === 'confirm') renderConfirm(e.confirm);
+  else if (e.type === 'walk') { if (e.walk) needFull(); renderWalk(e.walk); }
+  else if (e.type === 'confirm') { if (e.confirm) needFull(); renderConfirm(e.confirm); }
   else if (e.type === 'crew') renderCrew(e.agents);
-  else if (e.type === 'state') { S = e.state; renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderGateway(); }
-  else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else stopRec(true); }
+  else if (e.type === 'state') { S = e.state; renderChrome(); renderPermissions(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderGateway(); }
+  else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else endRec(true); }
+  else if (e.type === 'wake') { wakeArmed = e.on; S.wakeOn = e.on; S.settings.wake.word = e.word; ensureWake(); renderChrome(); }
+  else if (e.type === 'activity') { S.activity = e.activity; renderActivity(e.activity); }
+  else if (e.type === 'window') { S.compact = e.compact; renderChrome(); if (!e.compact) $('messages').scrollTop = $('messages').scrollHeight; }
 });
 
 call('state:get').then((state) => { S = state; renderAll(); });

@@ -52,9 +52,12 @@ async function cloudTranscribe(pcm, language) {
   return ((await res.json()).text || '').trim();
 }
 
-async function transcribe(pcm, onProgress) {
+// opts.localOnly: never use a cloud service for this audio (wake-word listening).
+async function transcribe(pcm, onProgress, opts = {}) {
+  if (process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE) { try { return require('fs').readFileSync(process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE, 'utf8').trim(); } catch { return ''; } } // test hook
   if (process.env.MEMOBROS_FAKE_TRANSCRIPT) return process.env.MEMOBROS_FAKE_TRANSCRIPT; // test hook
   const s = getSettings();
+  if (opts.localOnly) return localTranscribe(pcm, s.language, onProgress);
   return s.sttProvider === 'cloud' ? cloudTranscribe(pcm, s.language) : localTranscribe(pcm, s.language, onProgress);
 }
 

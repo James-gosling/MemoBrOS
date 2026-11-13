@@ -11,6 +11,7 @@ const APPROVAL_WAIT = 15 * 60 * 1000; // an unanswered approval counts as "no" a
 const DECLINED = 'The user did not approve this. Do not retry it; carry on without it or finish, and mention it in your report.';
 const deps = {};   // { confirm(title, text, opts), notify(title, body), changed(), runDesktop(routine), announce(routine, result) }
 let running = null; // { id, abort }
+let paused = false; // the assistant is paused: nothing scheduled fires
 
 const list = () => store.getRoutines();
 const save = (all) => { store.saveRoutines(all); deps.changed?.(); };
@@ -183,7 +184,7 @@ async function runOnce(task) {
 const worker = (name, task, signal) => brain.runRoutine({ routine: { id: `worker-${Date.now()}`, name, task }, tools: toolset(), exec: guardedExec({ id: null, name }), signal });
 
 function tick() {
-  if (running) return;
+  if (running || paused) return;
   const now = new Date();
   const all = list();
   let dirty = false;
@@ -208,4 +209,4 @@ function init(d) {
 const stop = () => running?.abort.abort();
 const view = () => list().map((r) => ({ ...r, running: running?.id === r.id }));
 
-module.exports = { worker, runOnce, init, view, add, addFromText, addFromChat, update, remove, setEnabled, run, stop, tick, mcpWithApproval, fromDraft };
+module.exports = { pause: (v) => { paused = !!v; }, worker, runOnce, init, view, add, addFromText, addFromChat, update, remove, setEnabled, run, stop, tick, mcpWithApproval, fromDraft };

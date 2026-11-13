@@ -8,9 +8,23 @@
 </head>
 <body>
 <header>
-  <div class="brand">
-    <img src="../../assets/cursor.png" width="28" height="28" alt="">
-    <span>Memo<b>BrOS</b></span>
+  <div id="titlebar">
+    <div class="brand">
+      <img src="../../assets/cursor.png" width="26" height="26" alt="">
+      <span>Memo<b>BrOS</b></span>
+    </div>
+    <div id="indicators" aria-live="polite">
+      <span id="ind-mic" class="ind" title="Microphone is on">mic</span>
+      <span id="ind-screen" class="ind" title="Capturing the screen">screen</span>
+      <span id="ind-control" class="ind" title="Controlling the mouse and keyboard">control</span>
+      <span id="ind-paused" class="ind" title="The assistant is paused">paused</span>
+    </div>
+    <div id="winbtns">
+      <button id="win-pause" title="Pause the assistant (stops listening, tasks and routines)">❙❙</button>
+      <button id="win-compact" title="Compact / expand">▁</button>
+      <button id="win-hide" title="Hide (MemoBrOS keeps running)">—</button>
+      <button id="win-quit" class="danger" title="Quit MemoBrOS completely">⏻</button>
+    </div>
   </div>
   <nav id="tabs">
     <button data-tab="chat" class="on">Chat</button>
@@ -47,9 +61,11 @@
  <button data-mode="crew" title="An orchestrator splits the goal between 2–4 subagents (Kiro CLI coders, background researchers)">Crew</button>
       <button data-mode="dictate" title="Speak into the focused text field of any app">Dictate</button>
     </div>
+    <div id="peek" class="muted"></div>
     <form id="composer">
       <button type="button" id="attach" class="icon" title="Attach files or PDFs">＋</button>
       <input id="text" autocomplete="off" placeholder="Ask about your screen…">
+      <button type="button" id="speaker" class="icon" title="Read answers aloud: on/off">🔊</button>
       <button type="button" id="mic" class="icon" title="Talk">●</button>
       <button type="submit" id="send" class="primary">Send</button>
     </form>
@@ -117,6 +133,16 @@
       <label>Anthropic API key<input id="set-key" type="password" autocomplete="off"></label>
       <label>Model<select id="set-model"><option value="claude-opus-5-5">Claude Opus 5.5 (default)</option><option value="claude-fable-5-2">Claude Fable 5.2 (most capable)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5 (faster)</option><option value="claude-haiku-5-5">Claude Haiku 5.5 (fastest)</option></select></label>
       </div>
+      <h3>Permissions</h3>
+      <p class="muted small">Each one is off until you allow it. The indicators at the top show when it is in use.</p>
+      <label class="check"><input type="checkbox" id="perm-screen">See my screen when I ask (screenshots go to the model you chose)</label>
+      <label class="check"><input type="checkbox" id="perm-microphone">Use the microphone</label>
+      <label class="check"><input type="checkbox" id="perm-control">Use the mouse and keyboard (agent mode, dictation)</label>
+      <h3>Wake word</h3>
+      <p class="muted small">Say the word, then your request, in Spanish or English: "ARVI, abre Visual Studio Code", "ARVI, analyze my screen". Detection runs on this computer; audio that is not addressed to the assistant is discarded and never sent anywhere.</p>
+      <label class="check"><input type="checkbox" id="set-wake">Listen for the wake word</label>
+      <label>Wake word<input id="set-wake-word" maxlength="20"></label>
+      <label>Also accept (comma separated spellings, optional)<input id="set-wake-aliases" placeholder="arbi, harvey"></label>
       <h3>Voice</h3>
       <label>Speech recognition<select id="set-stt"><option value="local">On-device Whisper (no key, downloads a model once)</option><option value="cloud">Cloud (OpenAI-compatible endpoint)</option></select></label>
       <div id="stt-cloud">
@@ -127,6 +153,7 @@
       <label>Spoken language<select id="set-lang"></select></label>
       <label class="check"><input type="checkbox" id="set-speak">Read answers aloud</label>
       <label>Voice<select id="set-voice"></select></label>
+      <label>Preferred voice languages (first is the default; answers use the language you spoke)<input id="set-voice-langs" placeholder="es-MX, en-US"></label>
       <h3>Dictation</h3>
       <label class="check"><input type="checkbox" id="set-polish">Fix grammar and punctuation before typing</label>
       <label id="dict-model-row">Polish model<select id="set-dict-model"><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option><option value="claude-haiku-5-5">Claude Haiku 5.5 (fastest)</option></select></label>
@@ -146,7 +173,10 @@
       <div class="row" style="margin-top:6px"><button type="button" id="gateway-toggle">Start gateway</button><span id="gateway-status" class="muted small grow"></span></div>
       <h3>System</h3>
       <label class="check"><input type="checkbox" id="set-autostart">Start MemoBrOS with the system, hidden (keeps routines running)</label>
-      <h3>Hotkeys</h3>
+      <label id="display-row">Display mode (Linux; applies after restarting MemoBrOS)<select id="set-display"><option value="auto">Automatic (native Wayland on Wayland sessions)</option><option value="x11">X11 through XWayland (overlay and agent control, X11 apps only)</option></select></label>
+      <div id="display-note" class="muted small"></div>
+      <h3>Shortcuts</h3>
+      <div id="hotkey-report" class="muted small"></div>
       <div id="hotkeys"></div>
       <div class="row"><button class="primary grow">Save settings</button></div>
       <div id="settings-note" class="muted small"></div>

@@ -10,7 +10,14 @@ async function capture(display = activeDisplay()) {
   const { width, height } = display.bounds;
   const k = Math.min(1, MAX_EDGE / Math.max(width, height));
   const w = Math.round(width * k), h = Math.round(height * k);
-  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: w, height: h } });
+  let sources;
+  try { sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: w, height: h } }); }
+  catch (e) {
+    // On Wayland the desktop asks the user to share a screen; refusing, or a desktop without that service, lands here.
+    throw new Error(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY
+      ? 'I could not capture the screen. On Wayland the system shows a screen-sharing dialog: choose a screen and allow it. If no dialog appeared, screen sharing is not available in this session.'
+      : `I could not capture the screen (${e.message}).`);
+  }
   const source = sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
   if (!source || source.thumbnail.isEmpty()) {
     throw new Error('Screen capture returned nothing. On macOS grant Screen Recording permission to MemoBrOS in System Settings → Privacy & Security.');

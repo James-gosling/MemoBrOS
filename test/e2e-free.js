@@ -93,7 +93,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
   script(path.join(bin, 'kirocrew'), `echo "$@" > "${gatewayLog}.argv"\ncat > "${gatewayLog}.stdin"\nexec sleep 300`);
   const acpLog = () => (fs.existsSync(acpLogFile) ? fs.readFileSync(acpLogFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   const git = (cwd, ...a) => require('child_process').execFileSync('git', a, { cwd, encoding: 'utf8' }).trim();
-  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ codeAgent: { cwd: project }, providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ permissions: { screen: true, microphone: true, control: true }, codeAgent: { cwd: project }, providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
   const app = await _electron.launch({
     executablePath: process.env.MEMOBROS_BIN || require('electron'), args: [...(process.env.MEMOBROS_BIN ? [] : [root]), '--no-sandbox'],
     env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, ACP_LOG: acpLogFile, OPENROUTER_API_KEY: 'or-test-key', ANTHROPIC_API_KEY: '', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1' },
@@ -405,7 +405,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       fs.writeFileSync(path.join(repo, 'shared.txt'), 'original\n'); fs.writeFileSync(path.join(repo, 'readme.md'), 'readme\n');
       git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'first commit');
       fs.writeFileSync(path.join(repo, 'old.txt'), 'old\n'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'second commit');
-      const history = git(repo, 'log', '--format=%H %s'), base = git(repo, 'rev-parse', 'HEAD');
+      const history = git(repo, 'log', '--topo-order', '--format=%H %s'), base = git(repo, 'rev-parse', 'HEAD');
       fs.writeFileSync(path.join(repo, 'readme.md'), 'readme with my unsaved edit\n');   // the user's uncommitted change
       fs.writeFileSync(path.join(repo, 'scratch-notes.txt'), 'untracked notes\n');        // and an untracked file
       await invoke('settings:save', { settings: { codeAgent: { cwd: repo } } });
@@ -458,7 +458,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       assert.equal(fs.readFileSync(path.join(repo, 'readme.md'), 'utf8'), 'readme with my unsaved edit\n', "the user's uncommitted edit survived");
       assert.equal(fs.readFileSync(path.join(repo, 'scratch-notes.txt'), 'utf8'), 'untracked notes\n', "the user's untracked file survived");
       assert.equal(fs.readFileSync(path.join(repo, 'old.txt'), 'utf8'), 'old\n');
-      assert.ok(git(repo, 'log', '--format=%H %s').endsWith(history), 'every earlier commit is still there, in order');
+      assert.ok(git(repo, 'log', '--topo-order', '--format=%H %s').endsWith(history), 'every earlier commit is still there, in order');
       assert.equal(git(repo, 'merge-base', 'HEAD', base), base, 'main only moved forward');
       require('child_process').execFileSync('git', ['fsck', '--no-progress'], { cwd: repo });
       const notes = api.state.requests.at(-1).body.messages.at(-1).content;

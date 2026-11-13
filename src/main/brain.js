@@ -65,6 +65,7 @@ const ROUTINE_PROPS = {
 const CREATE_ROUTINE = tool('create_routine', 'Schedule a task to run automatically, repeating or once, in the background.', ROUTINE_PROPS, ['name', 'task', 'schedule_text']);
 const RUN_IN_BACKGROUND = tool('run_in_background', 'Do a task quietly in the background, without touching the user\'s screen: it uses a private browser signed in to the accounts the user connected (Google Workspace, Notion, GitHub, Figma, ChatGPT, Claude and other sites) and their connected tools. Good for looking things up or doing web tasks while they keep working. The result arrives later as a notification.', { task: { type: 'string', description: 'Complete, self-contained instructions' } });
 const START_CREW = tool('start_crew', 'Hand a larger goal to the crew: an orchestrator that splits it between two to four subagents (coding agents working in the user\'s project folder, and background researchers) and merges their results. Use it for software development work and for goals with several independent parts.', { goal: { type: 'string', description: 'The complete goal, with every detail the user gave' } });
+const OPEN_APP = tool('open_app', 'Open an application that is installed on the user\'s computer, by name (for example "Visual Studio Code").', { name: { type: 'string' } });
 const START_AGENT = tool('start_agent', 'Hand a task to agent mode, which operates the mouse and keyboard after the user approves the plan.', { task: { type: 'string' } });
 
 // ---- attachments ------------------------------------------------------------
@@ -123,10 +124,11 @@ async function ask({ text, shot, attachments, pinnedSkill, hooks, signal }) {
   const reply = await turn({
     system: systemPrompt(shot, pinnedSkill),
     content: [...attachmentBlocks(attachments), shotBlock(shot), { type: 'text', text }],
-    tools: [POINT, DRAW, START_WALKTHROUGH, START_AGENT, START_CREW, RUN_IN_BACKGROUND, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
+    tools: [POINT, DRAW, OPEN_APP, START_WALKTHROUGH, START_AGENT, START_CREW, RUN_IN_BACKGROUND, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
     handlers: {
       ...baseHandlers(hooks),
       create_routine: (i) => hooks.createRoutine(i),
+      open_app: (i) => hooks.openApp(i.name),
       run_in_background: (i) => hooks.runBackground(i.task),
       start_crew: (i) => { hooks.startCrew(i.goal); return 'The crew is starting; progress shows in the panel. Say one short sentence acknowledging.'; },
       __other: (name, input) => hooks.callTool(name, input),

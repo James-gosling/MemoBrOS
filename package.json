@@ -1,19 +1,21 @@
 {
   "name": "memobros",
   "productName": "MemoBrOS",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "MemoBrOS \u2014 a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",
   "private": true,
   "scripts": {
     "postinstall": "install-electron",
-    "start": "electron . --ozone-platform=x11",
-    "test": "node test/worktrees.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js'",
+    "start": "electron .",
+    "test": "node test/worktrees.test.js && node test/voice.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "pack": "electron-builder --dir",
-    "start:wayland": "electron . --ozone-platform=wayland --enable-features=GlobalShortcutsPortal"
+    "start:wayland": "electron . --ozone-platform=wayland",
+    "start:x11": "electron . --ozone-platform=x11",
+    "install:desktop": "node scripts/install-desktop.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
@@ -37,7 +39,8 @@
       "package.json",
       "!node_modules/onnxruntime-node/bin/**/darwin/**",
       "!**/libonnxruntime_providers_cuda.so",
-      "!**/libonnxruntime_providers_tensorrt.so"
+      "!**/libonnxruntime_providers_tensorrt.so",
+      "scripts/**"
     ],
     "asarUnpack": [
       "**/*.node",
@@ -78,9 +81,31 @@
       "desktop": {
         "entry": {
           "Name": "MemoBrOS",
-          "StartupWMClass": "MemoBrOS"
+          "GenericName": "Desktop assistant",
+          "Comment": "Screen-aware AI assistant that stays in the background",
+          "StartupWMClass": "MemoBrOS",
+          "Actions": "Toggle;Pause;Resume;Quit;"
+        },
+        "desktopActions": {
+          "Toggle": {
+            "Name": "Show / hide MemoBrOS",
+            "Exec": "memobros --toggle"
+          },
+          "Pause": {
+            "Name": "Pause the assistant",
+            "Exec": "memobros --pause"
+          },
+          "Resume": {
+            "Name": "Resume the assistant",
+            "Exec": "memobros --resume"
+          },
+          "Quit": {
+            "Name": "Quit MemoBrOS completely",
+            "Exec": "memobros --quit"
+          }
         }
-      }
+      },
+      "executableName": "memobros"
     },
     "deb": {
       "depends": [

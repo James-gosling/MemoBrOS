@@ -1,9 +1,18 @@
 # MemoBrOS as a resident desktop assistant — work plan
 
-Status: **groundwork only**. Three modules are written and unit-checked but **not yet wired into the app**:
-`src/main/platform.js` (display backend and capabilities, native Wayland preferred), `src/main/wake.js`
-(local "ARVI" matching, Spanish/English commands), `src/main/apps.js` (open installed apps by name).
-Next session: start at "Next steps" at the end of this file.
+Status: **Phases A, B and D implemented and tested off-device; Phase C partly; nothing verified on the target
+machine yet.** User-facing documentation, permissions manual, Wayland limits and test results are in
+`docs/desktop-assistant.md`.
+
+| Phase | State |
+|---|---|
+| A. Installable, background | Done: `.deb` builds and installs, launcher with actions, `npm run install:desktop`, control commands, pause, quit, tray menu. systemd unit is written on request and never enabled. |
+| B. Floating interface, shortcuts | Done: frameless window, compact bar, remembered position, indicators, shortcut diagnostics and fallback. |
+| C. Desktop interaction | Partly: per-capability permissions and indicators, opening installed apps, honest refusal and clipboard fallback on native Wayland. **Not done:** persistent portal screen share, portal input, GNOME extension, active-window info. |
+| D. Wake word ARVI | Done with the on-device speech model gated by voice activity; bilingual local commands. Needs real-microphone testing. |
+| E. Tests, docs, packaging | Done for what exists; on-device verification outstanding. |
+
+Next: the "Not yet verified on the target machine" list in `docs/desktop-assistant.md`, then Phase C.
 
 Reference for look and behaviour: HeyClicky (https://www.youtube.com/watch?v=M7EZoppNP8Q): a compact floating
 chat bar (mic button, "+", text field, speaker toggle, send) that sits over other apps, expands into the

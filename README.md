@@ -4,6 +4,15 @@
 
 A working prototype of the HeyClicky idea, built with Electron. It runs on free models through OpenRouter or a local OmniRoute gateway by default, so it can cost nothing to use; Claude is an optional paid provider. Configured and packaged for **Windows and Linux**.
 
+## Desktop assistant
+
+MemoBrOS lives in the background as a floating window: close or hide it and it keeps running; `Ctrl+Alt+M`
+(or `memobros --toggle`) brings it back; **⏻** quits for real. It has a compact bar and a full view, a pause
+switch, a local bilingual wake word ("ARVI, abre Visual Studio Code" / "ARVI, analyze my screen"), and
+permissions for screen, microphone and mouse/keyboard that are off until you allow each one. Installing it,
+the permissions manual, what Wayland allows and what has been tested are in
+[docs/desktop-assistant.md](docs/desktop-assistant.md).
+
 ## Architecture
 
 ```
@@ -97,7 +106,7 @@ And the *Memo* in the name: say "remember that…" and it keeps the note across 
 
 ```bash
 npm install
-npm start
+npm start                 # or: npm run install:desktop, then open MemoBrOS from the applications menu
 ```
 
 1. Pick a model provider in the panel's **Settings** tab. Keys are stored encrypted with the OS keychain where available.
@@ -117,7 +126,7 @@ npm start
 | Needs | microphone permission | a compositor (for the transparent overlay), `libxtst6`; a notification daemon for routine alerts |
 | Start with the system | Settings → System (installed builds) | Settings → System (writes `~/.config/autostart/memobros.desktop`) |
 
-On Linux the app renders in software (no GPU needed), because the GPU process crashes under XWayland on some drivers. `MEMOBROS_GPU=1 npm start` turns acceleration back on. `npm start` runs through X11 (XWayland on a Wayland session); `npm run start:wayland` runs natively on Wayland instead, where the panel, chat, routines, connectors and crew work but the overlay cannot stay on top and the agent cannot drive the mouse.
+On Linux the app renders in software (no GPU needed), because the GPU process crashes under XWayland on some drivers. `MEMOBROS_GPU=1 npm start` turns acceleration back on. On a Wayland session `npm start` runs natively on Wayland; `npm run start:x11` (or Settings → System → Display mode) runs through XWayland instead, which enables the pointing overlay and agent control for X11 apps. The differences are tabulated in docs/desktop-assistant.md.
 
 Build each installer on its own platform: `npm install` fetches the speech-recognition runtime for the machine it runs on, so a Windows installer built on Linux would ship without on-device Whisper.
 
@@ -126,7 +135,10 @@ All hotkeys, the model, voice, language and agent caution level ("ask before eve
 ## How it works
 
 ```
-src/main/main.js      windows, tray, global hotkeys, orchestration of the five abilities
+src/main/main.js      windows, tray, global hotkeys, permissions, orchestration of the abilities
+src/main/platform.js  display backend (native Wayland preferred) and what it allows
+src/main/wake.js      local wake word and bilingual local commands
+src/main/apps.js      opening installed applications by name
 src/main/brain.js     prompts and tool loops: screen Q&A with point/draw, walkthrough steps, agent, routines, dictation polish
 src/main/llm.js       model providers: OpenRouter / OmniRoute (OpenAI chat format) and Anthropic, behind one call()
 src/main/routines.js  scheduler, routine storage, and the guardrails around background tool use

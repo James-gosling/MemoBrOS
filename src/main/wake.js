@@ -61,7 +61,7 @@ function interpret(command) {
 // Which language a reply is in, for choosing a voice. Good enough to tell Spanish from English.
 function languageOf(text) {
   const t = ` ${String(text).toLowerCase()} `;
-  const es = (t.match(/[ñáéíóú¿¡]| (el|la|los|las|que|de|es|en|una?|para|por|con|está|tu|sí|aquí|haz|abre) /g) || []).length;
+  const es = (t.match(/[ñáéíóú¿¡]| (el|la|los|las|que|de|es|en|una?|para|por|con|está|tu|sí|aquí|haz|abre|listo|hecho|no pude|ya) |[a-z]+(ando|iendo|ción|ciones) /g) || []).length;
   const en = (t.match(/ (the|is|are|you|your|to|of|and|it|this|that|here|click|open|with|for) /g) || []).length;
   return es > en ? 'es' : 'en';
 }

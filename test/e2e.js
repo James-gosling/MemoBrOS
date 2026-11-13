@@ -24,7 +24,7 @@ async function until(fn, what, ms = 15000) {
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-test-'));
-  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ provider: 'anthropic' })); // this suite covers the Claude path; e2e-free.js covers the free providers
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ provider: 'anthropic', permissions: { screen: true, microphone: true, control: true } })); // this suite covers the Claude path; e2e-free.js covers the free providers
   const api = await fake.start();
   const app = await _electron.launch({
     executablePath: process.env.MEMOBROS_BIN || require('electron'), // MEMOBROS_BIN: test a packaged build instead
