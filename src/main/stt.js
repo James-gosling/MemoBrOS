@@ -1,48 +1,8 @@
 // Speech-to-text. Input is 16 kHz mono Float32 PCM captured in the panel renderer.
 //  - local: Whisper running on-device through transformers.js (multilingual, no key; model downloads on first use)
 //  - cloud: any OpenAI-compatible /audio/transcriptions endpoint (OpenAI, Groq, ...)
-const path = require('path');
-const { app, utilityProcess } = require('electron');
 const { getSettings, getSecret } = require('./store');
-
-// ---- on-device recognition, in a separate process (see stt-worker.js) ------------------------
-let worker = null;       // { proc, pending: Map<id, { resolve, reject, onProgress }>, phase, log }
-let nextId = 1;
-
-function startWorker() {
-  const proc = utilityProcess.fork(path.join(__dirname, 'stt-worker.js'), [app.getPath('userData')], { stdio: 'pipe', serviceName: 'MemoBrOS speech' });
-  const w = { proc, pending: new Map(), phase: 'starting', log: '' };
-  const keep = (d) => { w.log = (w.log + d).slice(-600); };
-  proc.stdout?.on('data', keep); proc.stderr?.on('data', keep);
-  proc.on('message', (msg) => {
-    if (msg.phase) { w.phase = msg.phase; return; }
-    if (msg.progress !== undefined) { for (const p of w.pending.values()) p.onProgress?.(msg.progress); return; }
-    const p = w.pending.get(msg.id);
-    if (!p) return;
-    w.pending.delete(msg.id);
-    if (msg.error) p.reject(new Error(msg.error)); else p.resolve(msg.text);
-  });
-  proc.on('exit', (code) => {
-    if (worker === w) worker = null; // a fresh one is started on the next request
-    const detail = w.log.trim().split('\n').filter(Boolean).slice(-2).join(' | ');
-    for (const p of w.pending.values()) {
-      p.reject(new Error(`The on-device speech model stopped unexpectedly while ${w.phase} (exit code ${code}). MemoBrOS keeps running. Try a smaller model in Settings → Voice, or cloud speech recognition.${detail ? ` Details: ${detail}` : ''}`));
-    }
-    w.pending.clear();
-  });
-  return w;
-}
-
-function localTranscribe(pcm, language, onProgress) {
-  if (!worker) worker = startWorker();
-  const w = worker;
-  return new Promise((resolve, reject) => {
-    const id = nextId++;
-    w.pending.set(id, { resolve, reject, onProgress });
-    w.proc.postMessage({ id, pcm, model: getSettings().sttLocalModel, language });
-  });
-}
-const stopWorker = () => { if (worker) { const w = worker; worker = null; w.proc.kill(); } };
+const engine = require('./speech/engine');
 
 function wav(pcm) {
   const buf = Buffer.alloc(44 + pcm.length * 2);
@@ -84,13 +44,35 @@ function garbled(text) {
   return Math.max(...Object.values(counts)) / words.length > 0.45; // one word making up almost half of it
 }
 
-// opts.localOnly: never use a cloud service for this audio (wake-word listening).
-async function transcribe(pcm, onProgress, opts = {}) {
-  if (process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE) { try { return require('fs').readFileSync(process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE, 'utf8').trim(); } catch { return ''; } } // test hook
-  if (process.env.MEMOBROS_FAKE_TRANSCRIPT) return process.env.MEMOBROS_FAKE_TRANSCRIPT; // test hook
-  const s = getSettings();
-  if (opts.localOnly) return localTranscribe(pcm, s.language, onProgress);
-  return s.sttProvider === 'cloud' ? cloudTranscribe(pcm, s.language) : localTranscribe(pcm, s.language, onProgress);
+// Is this recording silence? (root-mean-square level under about -50 dB)
+function quiet(pcm) {
+  let sum = 0;
+  for (let i = 0; i < pcm.length; i++) sum += pcm[i] * pcm[i];
+  return !pcm.length || Math.sqrt(sum / pcm.length) < 0.003;
 }
 
-module.exports = { transcribe, garbled, stopWorker };
+const fake = () => {
+  if (process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE) { try { return require('fs').readFileSync(process.env.MEMOBROS_FAKE_TRANSCRIPT_FILE, 'utf8').trim(); } catch { return ''; } }
+  return process.env.MEMOBROS_FAKE_TRANSCRIPT; // undefined outside tests
+};
+
+// A request spoken after a hotkey, or dictation. → text ('' when nothing usable was heard)
+async function transcribe(pcm) {
+  const hook = fake();
+  if (hook !== undefined) return hook;
+  if (quiet(pcm)) return ''; // nothing was said: do not ask a model to make something of silence
+  const s = getSettings();
+  if (s.sttProvider === 'cloud') return cloudTranscribe(pcm, s.language === 'auto' ? '' : s.language);
+  return (await engine.transcribe(pcm)).text;
+}
+
+// A phrase heard while the wake word is armed: always recognised on this computer, whatever the provider setting.
+// `match(text)` decides whether it starts with the wake word. → { command, lang, text } or null
+async function wake(pcm, match) {
+  const hook = fake();
+  if (hook !== undefined) { const hit = garbled(hook) ? null : match(hook); return hit ? { command: hit.command, lang: '', text: hook } : (hook ? { miss: hook } : null); }
+  if (quiet(pcm)) return null;
+  return engine.wake(pcm, (text) => (garbled(text) ? null : match(text)));
+}
+
+module.exports = { transcribe, wake, garbled, stopWorker: engine.stop, engine };

@@ -153,8 +153,10 @@
         <label>Model<input id="set-stt-model"></label>
         <label>API key<input id="set-stt-key" type="password" autocomplete="off"></label>
       </div>
-      <label>On-device model (larger understands better, especially Spanish, but is slower and a bigger download)<select id="set-stt-local"><option value="Xenova/whisper-tiny">Tiny (fastest, ~40 MB)</option><option value="Xenova/whisper-base">Base (~80 MB)</option><option value="Xenova/whisper-small">Small (most accurate, ~250 MB)</option></select></label>
-      <label>Spoken language<select id="set-lang"></select></label>
+      <label>On-device model<select id="set-stt-local"><option value="tiny">Tiny: fastest (111 MB download, about 300 MB of memory)</option><option value="base">Base: good balance (190 MB, about 450 MB)</option><option value="small">Small: most accurate, slower (610 MB, about 900 MB)</option></select></label>
+      <div id="speech-models"></div>
+      <p class="muted small">Models are multilingual Whisper, downloaded once from the sherpa-onnx project on GitHub and run on this computer. The wake word always uses Tiny.</p>
+      <label>Spoken language (Automatic chooses between your preferred languages below)<select id="set-lang"></select></label>
       <label class="check"><input type="checkbox" id="set-speak">Read answers aloud</label>
       <label>Voice<select id="set-voice"></select></label>
       <label>Microphone<select id="set-mic"></select></label>

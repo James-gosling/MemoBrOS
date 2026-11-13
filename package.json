@@ -1,7 +1,7 @@
 {
   "name": "memobros",
   "productName": "MemoBrOS",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "MemoBrOS \u2014 a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",
@@ -9,19 +9,20 @@
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "test": "node test/worktrees.test.js && node test/voice.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js'",
+    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "pack": "electron-builder --dir",
     "start:wayland": "electron . --ozone-platform=wayland",
     "start:x11": "electron . --ozone-platform=x11",
-    "install:desktop": "node scripts/install-desktop.js"
+    "install:desktop": "node scripts/install-desktop.js",
+    "test:speech": "xvfb-run -a -s \"-screen 0 1280x800x24\" node test/speech-real.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
-    "@huggingface/transformers": "^4.3.2",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@nut-tree-fork/nut-js": "^4.2.6"
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "sherpa-onnx-node": "^2.0.1"
   },
   "devDependencies": {
     "electron": "^45.3.1",
@@ -37,17 +38,12 @@
       "skills/**",
       "assets/**",
       "package.json",
-      "!node_modules/onnxruntime-node/bin/**/darwin/**",
-      "!**/libonnxruntime_providers_cuda.so",
-      "!**/libonnxruntime_providers_tensorrt.so",
       "scripts/**"
     ],
     "asarUnpack": [
       "**/*.node",
-      "node_modules/onnxruntime-node/**",
-      "node_modules/@nut-tree-fork/**",
-      "node_modules/sharp/**",
-      "node_modules/@img/**"
+      "node_modules/sherpa-onnx-*/**",
+      "node_modules/@nut-tree-fork/**"
     ],
     "directories": {
       "output": "dist"

@@ -8,6 +8,7 @@ const assert = require('assert');
 const { spawn, spawnSync } = require('child_process');
 const { _electron } = require('playwright');
 const fake = require('./fakeLLM');
+const fakeModels = require('./fakeModels');
 const { text, use } = fake;
 
 const root = path.join(__dirname, '..');
@@ -295,33 +296,78 @@ async function noMicPart() {
 }
 
 // The on-device speech model runs in its own process. If that process dies (as a native runtime fault would make
-// it), the assistant must stay up and say what happened.
-async function speechCrashPart() {
-  const t = setup('sttcrash', { permissions: { screen: true, microphone: true, control: true } });
-  const env = { ...t.env, MEMOBROS_TEST_STT_CRASH: '1' };
-  delete env.MEMOBROS_FAKE_TRANSCRIPT_FILE; // use the real recogniser path
-  const app = current = await _electron.launch({ executablePath: electronBin, args: [...appArgs, '--no-sandbox'], env });
-  try {
+// it), or a model cannot be loaded, the assistant must stay up, say what happened, and not retry for ever.
+async function speechFailurePart() {
+  const served = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-served-'));
+  fakeModels.fakeArchive(served, 'tiny'); // correct layout, but the files are not real models
+  const host = await fakeModels.start(served);
+  const loud = () => { const n = new Float32Array(16000); for (let i = 0; i < n.length; i++) n[i] = Math.sin(i / 8) * 0.3; return n.buffer; };
+  const boot = async (extraEnv) => {
+    const t = setup('stt', { sttLocalModel: 'tiny', permissions: { screen: true, microphone: true, control: true } });
+    const env = { ...t.env, MEMOBROS_MODELS_URL: host.url, ...extraEnv };
+    delete env.MEMOBROS_FAKE_TRANSCRIPT_FILE; // use the real recogniser path
+    // a (fake) microphone is present here, so that the wake word can be armed
+    const app = current = await _electron.launch({ executablePath: electronBin, args: [...appArgs, '--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'], env });
     const panel = await until(() => app.windows().find((w) => w.url().endsWith('panel.html')), 'panel window');
     await panel.waitForSelector('.empty');
-    const invoke = (channel, payload) => panel.evaluate(([c, p]) => window.memo.invoke(c, p), [channel, payload]);
-    const speak = () => panel.evaluate(() => window.memo.invoke('audio:segment', { pcm: new Float32Array(16000).buffer, mode: 'ask', final: true }));
-    await check('speech model crash: the assistant survives, explains it, and a fresh speech process is used next time', async () => {
-      await speak();
-      await until(async () => (await panel.locator('.msg.error').last().innerText()).includes('speech model stopped unexpectedly'), 'crash reported in the chat');
-      assert.match(await panel.locator('.msg.error').last().innerText(), /MemoBrOS keeps running\. Try a smaller model/);
+    return { app, panel, invoke: (channel, payload) => panel.evaluate(([c, p]) => window.memo.invoke(c, p), [channel, payload]) };
+  };
+  const speak = (panel) => panel.evaluate((pcm) => window.memo.invoke('audio:segment', { pcm, mode: 'ask', final: true }), [...new Float32Array(loud())]).catch(() => {});
+  const lastError = (panel) => panel.locator('.msg.error').last().innerText();
+  const quit = async (app) => { await app.evaluate(({ app: a }) => { a.isQuitting = true; a.quit(); }).catch(() => {}); await app.close().catch(() => {}); };
+
+  let { app, panel, invoke } = await boot({ MEMOBROS_TEST_STT_CRASH: '1' });
+  try {
+    await check('speech process crash: the assistant survives, explains it, stops retrying after three failures, and the wake word switches itself off', async () => {
+      const say = () => panel.evaluate(() => { const n = new Float32Array(16000); for (let i = 0; i < n.length; i++) n[i] = Math.sin(i / 8) * 0.3; return window.memo.invoke('audio:segment', { pcm: n.buffer, mode: 'ask', final: true }); });
+      await say();
+      await until(async () => (await lastError(panel)).includes('speech model stopped unexpectedly'), 'crash reported in the chat');
+      assert.match(await lastError(panel), /MemoBrOS keeps running\. Try a smaller model/);
       assert.equal(app.process().exitCode, null, 'the app did not exit');
-      assert.equal((await invoke('state:get')).paused, false, 'and still answers');
-      // the wake word path: it switches itself off rather than crash-looping
+      assert.equal((await invoke('state:get')).speech.find((m) => m.model === 'tiny').state, 'installed', 'the model is not left showing "transcribing"');
       await invoke('wake:set', { enabled: true });
-      await app.evaluate(() => global.__memo.heard(new Float32Array(16000)));
+      await app.evaluate(() => { const n = new Float32Array(16000); for (let i = 0; i < n.length; i++) n[i] = Math.sin(i / 8) * 0.3; return global.__memo.heard(n); });
       await until(async () => !(await invoke('state:get')).wakeOn, 'wake word turned itself off after the failure');
-      assert.match(await panel.locator('.msg.error').last().innerText(), /Wake word turned off: The on-device speech model stopped unexpectedly/);
+      assert.ok((await panel.locator('.msg.error').allInnerTexts()).some((t) => /Wake word turned off: The on-device speech model stopped unexpectedly/.test(t)), 'and it says why');
+      await say(); await sleep(300); await say();
+      await until(async () => (await lastError(panel)).includes('failed three times in a minute, so it is paused'), 'no endless restart loop');
       api.state.script = [() => [text('Still here.')]];
       await panel.fill('#text', 'are you alive?'); await panel.click('#send');
       await until(async () => (await panel.locator('.msg.memo').last().innerText()).includes('Still here'), 'typed requests keep working');
     });
-  } finally { await app.evaluate(({ app: a }) => { a.isQuitting = true; a.quit(); }).catch(() => {}); await app.close().catch(() => {}); }
+  } finally { await quit(app); }
+
+  ({ app, panel, invoke } = await boot({}));
+  try {
+    await check('model list in Settings: real download states, cancel and resume, a model that cannot be loaded is reported as failed', async () => {
+      await panel.click('#tabs [data-tab="settings"]');
+      const row = (m) => panel.locator(`#speech-models .item[data-model="${m}"]`);
+      assert.match(await row('tiny').innerText(), /Tiny \(selected\)\s*Not downloaded/);
+      host.state.mode = 'slow';
+      await row('tiny').locator('button', { hasText: 'Download' }).click();
+      await until(async () => /Downloading: \d+ MB of \d+ MB/.test(await row('tiny').innerText()), 'byte progress from the real download');
+      await row('tiny').locator('button', { hasText: 'Cancel' }).click();
+      await until(async () => (await row('tiny').innerText()).includes('Download cancelled'), 'cancelled state');
+      host.state.mode = 'ok';
+      await row('tiny').locator('button', { hasText: 'Resume' }).click();
+      await until(async () => (await row('tiny').getAttribute('data-state')) === 'installed', 'installed after resuming');
+      assert.ok(host.state.requests.at(-1).range > 0, 'resumed from the partial file instead of starting over');
+      assert.match(await row('tiny').innerText(), /Downloaded/);
+      await panel.screenshot({ path: path.join(out, 'desktop-speech-models.png') });
+      // these files have the right names but are not models: loading must fail cleanly, once
+      await panel.evaluate(() => { const n = new Float32Array(16000); for (let i = 0; i < n.length; i++) n[i] = Math.sin(i / 8) * 0.3; return window.memo.invoke('audio:segment', { pcm: n.buffer, mode: 'ask', final: true }); });
+      await panel.click('#tabs [data-tab="chat"]');
+      await until(async () => /Speech recognition failed|speech model stopped unexpectedly/.test(await lastError(panel)), 'load failure reported');
+      assert.equal(app.process().exitCode, null);
+      const st = (await invoke('state:get')).speech.find((m) => m.model === 'tiny').state;
+      assert.ok(['failed', 'installed'].includes(st), `the model does not claim to be ready (state: ${st})`);
+      // silence is never sent to a recogniser at all
+      const before = await panel.locator('.msg').count();
+      await panel.evaluate(() => window.memo.invoke('audio:segment', { pcm: new Float32Array(16000).buffer, mode: 'ask', final: true }));
+      await sleep(400);
+      assert.equal(await panel.locator('.msg').count(), before);
+    });
+  } finally { await quit(app); host.close(); }
 }
 
 async function waylandPart() {
@@ -395,7 +441,7 @@ async function waylandPart() {
   fs.mkdirSync(out, { recursive: true });
   api = await fake.start();
   try {
-    if (process.env.DISPLAY) { await x11Part(); await noMicPart(); await speechCrashPart(); } else console.log('SKIP  X11 part (no DISPLAY)');
+    if (process.env.DISPLAY) { await x11Part(); await noMicPart(); await speechFailurePart(); } else console.log('SKIP  X11 part (no DISPLAY)');
     await waylandPart();
   } finally { api.close(); }
   const failed = results.filter((r) => r[1] === 'FAIL').length;

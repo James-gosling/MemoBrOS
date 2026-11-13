@@ -11,7 +11,7 @@ let S = null;        // app state from the main process
 let mode = 'ask';
 let editingSkill = null;
 
-const LANGS = { auto: 'Auto-detect', en: 'English', es: 'Español', pt: 'Português', fr: 'Français', de: 'Deutsch', it: 'Italiano', nl: 'Nederlands', ca: 'Català', gl: 'Galego', eu: 'Euskara', sv: 'Svenska', da: 'Dansk', no: 'Norsk', fi: 'Suomi', is: 'Íslenska', pl: 'Polski', cs: 'Čeština', sk: 'Slovenčina', hu: 'Magyar', ro: 'Română', bg: 'Български', hr: 'Hrvatski', sr: 'Српски', sl: 'Slovenščina', uk: 'Українська', ru: 'Русский', el: 'Ελληνικά', tr: 'Türkçe', ar: 'العربية', he: 'עברית', fa: 'فارسی', ur: 'اردو', hi: 'हिन्दी', bn: 'বাংলা', ta: 'தமிழ்', te: 'తెలుగు', mr: 'मराठी', gu: 'ગુજરાતી', kn: 'ಕನ್ನಡ', ml: 'മലയാളം', pa: 'ਪੰਜਾਬੀ', ne: 'नेपाली', th: 'ไทย', vi: 'Tiếng Việt', id: 'Bahasa Indonesia', ms: 'Bahasa Melayu', tl: 'Tagalog', zh: '中文', ja: '日本語', ko: '한국어', sw: 'Kiswahili', af: 'Afrikaans', et: 'Eesti', lv: 'Latviešu', lt: 'Lietuvių', cy: 'Cymraeg', hy: 'Հայերեն', az: 'Azərbaycan', kk: 'Қазақ' };
+const LANGS = { auto: 'Automatic', en: 'English', es: 'Español', pt: 'Português', fr: 'Français', de: 'Deutsch', it: 'Italiano', nl: 'Nederlands', ca: 'Català', gl: 'Galego', eu: 'Euskara', sv: 'Svenska', da: 'Dansk', no: 'Norsk', fi: 'Suomi', is: 'Íslenska', pl: 'Polski', cs: 'Čeština', sk: 'Slovenčina', hu: 'Magyar', ro: 'Română', bg: 'Български', hr: 'Hrvatski', sr: 'Српски', sl: 'Slovenščina', uk: 'Українська', ru: 'Русский', el: 'Ελληνικά', tr: 'Türkçe', ar: 'العربية', he: 'עברית', fa: 'فارسی', ur: 'اردو', hi: 'हिन्दी', bn: 'বাংলা', ta: 'தமிழ்', te: 'తెలుగు', mr: 'मराठी', gu: 'ગુજરાતી', kn: 'ಕನ್ನಡ', ml: 'മലയാളം', pa: 'ਪੰਜਾਬੀ', ne: 'नेपाली', th: 'ไทย', vi: 'Tiếng Việt', id: 'Bahasa Indonesia', ms: 'Bahasa Melayu', tl: 'Tagalog', zh: '中文', ja: '日本語', ko: '한국어', sw: 'Kiswahili', af: 'Afrikaans', et: 'Eesti', lv: 'Latviešu', lt: 'Lietuvių', cy: 'Cymraeg', hy: 'Հայերեն', az: 'Azərbaycan', kk: 'Қазақ' };
 const HOTKEY_LABELS = { ask: 'Ask about screen', agent: 'Agent mode', dictate: 'Dictation', next: 'Next walkthrough step', panel: 'Show / hide panel', approve: 'Approve', stop: 'Stop everything' };
 const pretty = (acc) => String(acc).replace('CommandOrControl', S?.platform === 'darwin' ? '⌘' : 'Ctrl').replace('Alt', S?.platform === 'darwin' ? '⌥' : 'Alt').replace(/\+/g, ' ');
 
@@ -397,6 +397,38 @@ $('routine-new').addEventListener('submit', async (e) => {
 $('web-connect').addEventListener('submit', (e) => { e.preventDefault(); call('web:connect', { url: $('web-url').value.trim() }); });
 $('folder-add').addEventListener('click', async () => { S = await call('folders:pick'); renderRoutines(); });
 
+// ---- on-device speech models: what is on disk and what each one is doing right now ----------------
+const mb = (n) => `${Math.round((n || 0) / 1048576)} MB`;
+function speechLine(m) {
+  return {
+    not_installed: 'Not downloaded', downloading: m.total ? `Downloading: ${mb(m.received)} of ${mb(m.total)}` : `Downloading: ${mb(m.received)}`,
+    interrupted: `Download interrupted at ${mb(m.received)}. ${m.error || ''}`, cancelled: `Download cancelled${m.received ? ` at ${mb(m.received)}` : ''}`,
+    verifying: 'Download complete. Checking the files…', installed: 'Downloaded', initializing: 'Loading into memory…', ready: 'Ready', transcribing: 'Transcribing…', failed: `Failed. ${m.error || ''}`,
+  }[m.state] || m.state;
+}
+function renderSpeech() {
+  const act = (channel, model) => async () => { S.speech = await call(channel, { model }); renderSpeech(); };
+  $('speech-models').replaceChildren(...(S.speech || []).map((m) => {
+    const busy = ['downloading', 'verifying'].includes(m.state), have = ['installed', 'initializing', 'ready', 'transcribing'].includes(m.state);
+    const row = h('div', { className: 'item' }, h('div', { className: 'grow' }, h('b', { textContent: `${m.label}${m.model === S.speechModel ? ' (selected)' : ''}` }),
+      h('span', { className: `meta ${m.state === 'ready' ? 'ok' : m.state === 'failed' || m.state === 'interrupted' ? 'bad' : ''}`, textContent: speechLine(m) })));
+    row.dataset.model = m.model; row.dataset.state = m.state;
+    const btns = h('div', { className: 'btns' });
+    if (busy) btns.append(h('button', { type: 'button', textContent: 'Cancel', onclick: act('speech:cancel', m.model) }));
+    else if (!have) btns.append(h('button', { type: 'button', textContent: m.state === 'not_installed' ? 'Download' : m.state === 'failed' ? 'Retry' : 'Resume', onclick: act('speech:download', m.model) }));
+    if (have || ['interrupted', 'cancelled'].includes(m.state)) btns.append(h('button', { type: 'button', className: 'danger', textContent: 'Delete', onclick: act('speech:remove', m.model) }));
+    row.append(btns);
+    return row;
+  }));
+}
+// News about one model. Each operation is numbered, so a late event from an earlier one cannot overwrite newer state.
+function speechEvent(st) {
+  const i = (S.speech || []).findIndex((m) => m.model === st.model);
+  if (i < 0 || (st.op || 0) < (S.speech[i].op || 0)) return;
+  S.speech[i] = { ...S.speech[i], ...st };
+  renderSpeech();
+}
+
 // Sites to sign in to in the background browser. Google first: its session unlocks Workspace and "Continue with Google" elsewhere.
 const ACCOUNTS = [['Google account', 'accounts.google.com'], ['Gmail', 'mail.google.com'], ['Drive', 'drive.google.com'], ['Docs', 'docs.google.com'], ['Sheets', 'sheets.google.com'], ['Calendar', 'calendar.google.com'],
   ['Notion', 'www.notion.so/login'], ['GitHub', 'github.com/login'], ['Figma', 'www.figma.com/login'], ['ChatGPT', 'chatgpt.com'], ['Claude', 'claude.ai/login']];
@@ -483,7 +515,7 @@ function renderSettings() {
   $('set-omni-key').value = ''; $('set-omni-key').placeholder = S.keys.omniroute ? 'Saved' : 'Optional for a local gateway';
   $('set-key').value = ''; $('set-key').placeholder = S.keys.anthropic ? 'Saved. Paste a new key to replace it' : 'sk-ant-…';
   $('set-model').value = s.model; $('set-dict-model').value = s.dictationModel;
-  $('set-stt-local').value = s.sttLocalModel; $('set-wake-debug').checked = !!s.wake.debug;
+  $('set-stt-local').value = S.speechModel; renderSpeech(); $('set-wake-debug').checked = !!s.wake.debug;
   $('set-stt').value = s.sttProvider; $('set-stt-url').value = s.sttBaseUrl; $('set-stt-model').value = s.sttCloudModel;
   $('set-stt-key').value = ''; $('set-stt-key').placeholder = S.hasSttKey ? 'Saved' : 'API key for the endpoint';
   $('stt-cloud').hidden = s.sttProvider !== 'cloud';
@@ -578,6 +610,7 @@ window.memo.on((e) => {
   else if (e.type === 'state') { S = e.state; renderChrome(); renderPermissions(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderGateway(); }
   else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else endRec(true); }
   else if (e.type === 'wake') { wakeArmed = e.on; S.wakeOn = e.on; S.settings.wake.word = e.word; ensureWake(); renderChrome(); }
+  else if (e.type === 'speech') speechEvent(e.status);
   else if (e.type === 'activity') { S.activity = e.activity; renderActivity(e.activity); }
   else if (e.type === 'window') { S.compact = e.compact; renderChrome(); if (!e.compact) $('messages').scrollTop = $('messages').scrollHeight; }
 });

@@ -477,7 +477,7 @@ function doRoutineFromText(text) {
 function dictateSegment(pcm) {
   dictationQueue = dictationQueue.then(async () => {
     try {
-      let text = await stt.transcribe(pcm, sttProgress);
+      let text = await stt.transcribe(pcm);
       if (!text) return;
       if (store.getSettings().dictationPolish && brain.hasKey()) text = await brain.polish(text);
       if (caps.control && (await allowed('control'))) { await input.paste(`${text} `); toPanel({ type: 'message', role: 'dictation', text }); }
@@ -486,7 +486,13 @@ function dictateSegment(pcm) {
   });
   return dictationQueue;
 }
-const sttProgress = (pct) => status('thinking', `Downloading speech model… ${pct}%`);
+// Speech model lifecycle → the panel, as it happens. Shown as real bytes and real stages, never a made-up percentage.
+const MB = (n) => `${Math.round(n / 1048576)} MB`;
+function speechChanged(st) {
+  toPanel({ type: 'speech', status: st });
+  const label = { downloading: st.total ? `Downloading voice model: ${MB(st.received)} of ${MB(st.total)}` : `Downloading voice model: ${MB(st.received)}`, verifying: 'Checking the downloaded voice model…', initializing: 'Loading the voice model…' }[st.state];
+  if (label) status('thinking', label);
+}
 
 // ---- voice input routing -------------------------------------------------------------
 function setListening(mode) {
@@ -522,15 +528,14 @@ async function setWake(enabled) {
 async function heard(pcm) {
   if (!wakeOn || listening) return;
   const s = store.getSettings();
-  let text = '';
-  try { text = await stt.transcribe(pcm, sttProgress, { localOnly: true }); }
+  const extra = String(s.wake.aliases || '').split(',').map((x) => x.trim()).filter(Boolean);
+  let hit;
+  try { hit = await stt.wake(pcm, (text) => wake.match(text, s.wake.word, extra)); }
   catch (e) { await setWake(false); toPanel({ type: 'message', role: 'error', text: `Wake word turned off: ${e.message || e}` }); return; }
-  if (s.wake.debug && text) toPanel({ type: 'message', role: 'action', text: `heard: ${text.slice(0, 120)}` }); // optional, for tuning; stays on this computer
-  if (stt.garbled(text)) return; // the recogniser made something up from noise
-  const hit = wake.match(text, s.wake.word, String(s.wake.aliases || '').split(',').map((x) => x.trim()).filter(Boolean));
-  if (!hit) return; // not addressed to the assistant: forget it
+  if (s.wake.debug && hit && (hit.text || hit.miss)) toPanel({ type: 'message', role: 'action', text: `heard: ${String(hit.text || hit.miss).slice(0, 120)}` }); // optional, for tuning; stays on this computer
+  if (!hit || hit.miss) return; // not addressed to the assistant: forget it
   const cmd = wake.interpret(hit.command);
-  const spanish = wake.languageOf(hit.command || text) === 'es';
+  const spanish = hit.lang ? hit.lang === 'es' : wake.languageOf(hit.command) === 'es';
   toPanel({ type: 'message', role: 'user', text: hit.command || s.wake.word, tag: s.wake.word });
   switch (cmd.kind) {
     case 'listen': toggleListen('ask'); return;
@@ -594,6 +599,7 @@ function state() {
   const s = store.getSettings();
   return {
     display: env.display, session: env.session, caps, paused, wakeOn, activity, hotkeys: hotkeyReport, compact: !!(s.window || {}).compact,
+    speech: stt.engine.models().all(), speechModel: stt.engine.mainModel(),
     settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
     keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
     routines: routines.view(), mcp: mcp.status(), codeAgent: crew.codeAgent(), gateway: gateway.status(), sharedFolders: store.sharedFolders(),
@@ -605,6 +611,7 @@ function pushState() { toPanel({ type: 'state', state: state() }); }
 const handlers = {
   'state:get': () => state(),
   'settings:save': ({ settings, anthropicKey, sttKey, openrouterKey, omnirouteKey }) => {
+    const modelBefore = stt.engine.mainModel();
     if (settings) store.saveSettings(settings);
     if (openrouterKey !== undefined) store.setSecret('openrouter', openrouterKey.trim());
     if (omnirouteKey !== undefined) store.setSecret('omniroute', omnirouteKey.trim());
@@ -612,6 +619,7 @@ const handlers = {
     if (sttKey !== undefined) store.setSecret('stt', sttKey.trim());
     const failed = registerHotkeys();
     applyAutostart();
+    if (stt.engine.mainModel() !== modelBefore) stt.engine.modelChanged(); // the previous model must not stay loaded
     syncWake();
     return { ...state(), failedHotkeys: failed };
   },
@@ -625,7 +633,7 @@ const handlers = {
     if (final && listening) setListening(null);
     status('thinking', 'Transcribing');
     let text = '';
-    try { text = await stt.transcribe(samples, sttProgress); }
+    try { text = await stt.transcribe(samples); }
     catch (e) { status('idle'); toPanel({ type: 'message', role: 'error', text: e.message || String(e) }); return; }
     if (!text) { status('idle'); return; }
     if (stt.garbled(text)) { // noise or a faint voice turned into invented text: do not act on it
@@ -677,6 +685,11 @@ const handlers = {
   'assistant:pause': ({ paused: p }) => { setPaused(p); return state(); },
   'wake:set': async ({ enabled }) => { await setWake(enabled); return state(); },
   'permission:set': ({ name, value }) => { if (name in PERMISSIONS) store.saveSettings({ permissions: { [name]: !!value } }); syncWake(); return state(); },
+  // on-device speech models
+  'speech:status': () => stt.engine.models().all(),
+  'speech:download': ({ model }) => { stt.engine.models().ensure(model).catch(() => {}); return stt.engine.models().all(); }, // outcome arrives as events
+  'speech:cancel': ({ model }) => { stt.engine.models().cancel(model); return stt.engine.models().all(); },
+  'speech:remove': ({ model }) => { if (model === stt.engine.mainModel() || model === 'tiny') stt.engine.stop(); stt.engine.models().remove(model); return stt.engine.models().all(); },
   'chat:reset': () => { brain.resetHistory(); walkStop(); },
   'models:list': ({ provider }) => llm.listModels(provider),
   // routines
@@ -749,6 +762,7 @@ else {
       },
     });
     gateway.init(pushState);
+    stt.engine.models().on('change', speechChanged);
     mcp.sync().then(pushState).catch((e) => console.error('MCP', e));
     const failed = registerHotkeys();
     panel.webContents.once('did-finish-load', () => syncWake());
@@ -759,4 +773,4 @@ else {
   app.on('before-quit', () => { app.isQuitting = true; if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 
-if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };
+if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, stt, wakeMatch: (t) => wake.match(t, store.getSettings().wake.word), worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };

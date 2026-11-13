@@ -23,7 +23,7 @@ const DEFAULTS = {
   model: 'claude-opus-5-5', // Anthropic model, when provider is anthropic
   dictationModel: 'claude-opus-5-5',
   sttProvider: 'local', // local | cloud
-  sttLocalModel: 'Xenova/whisper-base',
+  sttLocalModel: 'base', // tiny | base | small (multilingual Whisper, run on this computer)
   sttBaseUrl: 'https://api.openai.com/v1',
   sttCloudModel: 'whisper-1',
   language: 'auto', // ISO code (es, en, fr, ...) or auto
