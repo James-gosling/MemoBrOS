@@ -10,6 +10,8 @@ const DEFAULTS = {
     openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free' },
     omniroute: { baseUrl: 'http://localhost:20128/v1', model: 'auto' },
   },
+  // The coding agent MemoBrOS drives over the Agent Client Protocol (ACP). Kiro CLI by default.
+  codeAgent: { enabled: true, command: 'kiro-cli acp', cwd: '', crewCommand: '' },
   mcpServers: [], // [{ id, name, type: 'stdio' | 'http', command, url, trust: 'ask' | 'always', enabled, allowedTools: [] }]
   sharedFolders: null, // folders background agents may pick upload files from; null → Documents, Downloads, Desktop
   model: 'claude-opus-5-5', // Anthropic model, when provider is anthropic
@@ -53,7 +55,7 @@ let settings;
 function getSettings() {
   if (!settings) {
     const saved = readJson('settings.json', {});
-    settings = { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...(saved.hotkeys || {}) }, providers: mergeProviders(DEFAULTS.providers, saved.providers) };
+    settings = { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...(saved.hotkeys || {}) }, providers: mergeProviders(DEFAULTS.providers, saved.providers), codeAgent: { ...DEFAULTS.codeAgent, ...(saved.codeAgent || {}) } };
   }
   return settings;
 }
@@ -64,6 +66,7 @@ function sharedFolders() {
 }
 function saveSettings(patch) {
   const next = { ...getSettings(), ...patch };
+  if (patch.codeAgent) next.codeAgent = { ...getSettings().codeAgent, ...patch.codeAgent };
   if (patch.providers) next.providers = mergeProviders(getSettings().providers, patch.providers);
   if (patch.hotkeys) next.hotkeys = { ...getSettings().hotkeys, ...patch.hotkeys };
   settings = next;

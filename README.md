@@ -4,6 +4,56 @@
 
 A working prototype of the HeyClicky idea, built with Electron. It runs on free models through OpenRouter or a local OmniRoute gateway by default, so it can cost nothing to use; Claude is an optional paid provider. Configured and packaged for **Windows and Linux**.
 
+## Architecture
+
+```
+                         You
+              goals and instructions (voice or text)
+                          │
+        ┌─────────────────▼─────────────────┐
+        │              MemoBrOS             │
+        │ Memory · Scheduling · Agent       │
+        │ coordination · Approvals          │
+        └─────────────────┬─────────────────┘
+                          │  Agent Client Protocol (ACP)
+                  ┌───────▼───────┐
+                  │    Kiro CLI   │   code generation · analysis · tests · tool execution
+                  └───────┬───────┘
+          GitHub · Local files · MCP servers
+```
+
+MemoBrOS is the persistent layer: it remembers, schedules, coordinates agents and asks for your approval. Coding work is done by Kiro CLI, which MemoBrOS starts and drives over ACP. The MCP servers you connect in MemoBrOS (local commands and token-based remote ones) are handed to Kiro for each session.
+
+### Crew mode: one orchestrator, two to four subagents
+
+Pick **Crew** in the chat, say "memo crew, …", or schedule it as a routine ("Runs as: Coding crew").
+
+1. The **orchestrator** (your configured model) splits the goal into parts for two to four subagents.
+2. **Coder** subagents are separate Kiro CLI sessions in your project folder. **Researcher** subagents are MemoBrOS background workers with the private browser, your connected accounts and MCP tools.
+3. Phase-1 agents run at the same time; phase-2 agents (review, tests) run afterwards and see the others' results.
+4. Anything Kiro asks permission for shows up as an approval card in MemoBrOS. The orchestrator then merges the results into one spoken report.
+
+**With Kiro Crew.** Kiro Crew is itself an orchestration platform on top of Kiro CLI. If you run it, put the command that starts it as an ACP agent in Settings → Coding agent → *Kiro Crew command*. Crew mode then hands Kiro Crew the whole goal and lets it coordinate its own agents, while MemoBrOS stays the layer for memory, scheduling and approvals. Leave it empty and MemoBrOS orchestrates Kiro CLI sessions itself.
+
+Set the project folder (and the command, `kiro-cli acp` by default) in Settings → Coding agent. Any other ACP agent command works there too.
+
+### Connectors
+
+| Service | How it connects | What you still need |
+|---|---|---|
+| Notion | Remote server, sign-in opens in your browser | Approve MemoBrOS on Notion's page |
+| GitHub | Remote server | A personal access token |
+| Google Workspace | Local `workspace-mcp` server (Gmail, Drive, Docs, Sheets, Slides, Calendar, Forms, Tasks, Chat) | `uv` installed and your own Google Cloud OAuth client ID and secret |
+| Figma | Remote server, or the desktop app's local server | Figma may refuse apps it hasn't approved; the desktop preset is the fallback |
+| Vercel | Remote server, sign-in opens in your browser | A Vercel account; Vercel may refuse apps it hasn't approved |
+| Airtable | Remote server, sign-in opens in your browser | Approve MemoBrOS in Airtable, or paste a personal access token |
+| Supabase | Remote server, sign-in opens in your browser | A Supabase account |
+| Companio | Remote server (`companio-api.byafluence.com/mcp`), sign-in opens in your browser | Your Companio account |
+| Claude | `claude mcp serve` | The `claude` CLI installed and signed in |
+| ChatGPT | `codex mcp-server` (OpenAI's Codex agent) | The `codex` CLI installed and signed in |
+
+All of these are one click under Settings → Connectors; any other MCP server can be added by URL or command.
+
 ## The five abilities
 
 | # | Ability | How to use it |
@@ -23,7 +73,7 @@ A working prototype of the HeyClicky idea, built with Electron. It runs on free 
 ### Web uploads and custom MCP servers
 
 - **Permissioned web uploads.** A background agent can pick a file from the folders you share (Documents, Downloads and Desktop by default; editable) and attach it to a web form. You approve each file and site once; files outside the shared folders are refused outright.
-- **One-click connectors.** Settings → Custom tools has presets for **Notion** (sign in through your browser), **GitHub** (paste a personal access token), **Google Workspace** (Gmail, Drive, Docs, Sheets, Slides, Calendar, Forms, Tasks, Chat through the open-source `workspace-mcp` server; needs `uv` and your own Google Cloud OAuth client), **Figma** (remote, or the desktop app's local server), **Claude Code** (`claude mcp serve`) and **ChatGPT via Codex** (`codex mcp-server`). Remote servers that require OAuth open their sign-in page in your browser and stay signed in afterwards.
+- **One-click connectors.** Settings → Connectors has presets (see the table above) for **Notion** (sign in through your browser), **GitHub** (paste a personal access token), **Google Workspace** (Gmail, Drive, Docs, Sheets, Slides, Calendar, Forms, Tasks, Chat through the open-source `workspace-mcp` server; needs `uv` and your own Google Cloud OAuth client), **Figma** (remote, or the desktop app's local server), **Claude Code** (`claude mcp serve`) and **ChatGPT via Codex** (`codex mcp-server`). Remote servers that require OAuth open their sign-in page in your browser and stay signed in afterwards.
 - **Your Google account as the key to web apps.** Under Routines → Connected accounts, sign in to Google once in Memo's private background browser. Background tasks and routines can then use Gmail, Drive, Docs, Sheets and Calendar on the web, and "Continue with Google" signs that browser in to third-party apps such as Figma, ChatGPT, Claude and Notion. Ask by voice ("check my Gmail for invoices") and Memo does it in the background and reports back.
 - **Custom MCP integration.** In Settings → Custom tools, connect a Model Context Protocol server by remote URL (with an optional token) or local command line. Its tools become available to voice requests and routines: "what did ACME buy last month?" can hit your database. Tools that change things ask first, with an "always allow" choice.
 
@@ -66,6 +116,8 @@ src/main/llm.js       model providers: OpenRouter / OmniRoute (OpenAI chat forma
 src/main/routines.js  scheduler, routine storage, and the guardrails around background tool use
 src/main/cron.js      schedule matching (the model writes the schedule; users only see plain words)
 src/main/webagent.js  hidden background browser with persistent sign-ins, page reading, form filling, file upload
+src/main/acp.js       ACP client: starts and drives the coding agent (Kiro CLI) over stdio
+src/main/crew.js      crew mode: orchestrator, 2–4 subagents, optional hand-off to Kiro Crew
 src/main/mcp.js       MCP client: remote (streamable HTTP / SSE) and local (stdio) servers
 src/main/screen.js    captures the display under the cursor, maps screenshot pixels ↔ desktop coordinates
 src/main/input.js     synthetic mouse / keyboard / paste (nut.js)
@@ -96,7 +148,9 @@ Launches the real app on a virtual display against a scripted stand-in for the m
 - The background browser reads pages as text and numbered controls, so heavily scripted sites may not work; the "submit" guardrail recognises standard HTML forms, not every custom button.
 - Only developed and run on Linux, where the AppImage and `.deb` build and the packaged app passes the test suites. The Windows configuration and code paths are written but have not been run on Windows.
 - None of the real connectors (Notion, GitHub, Google Workspace, Figma, Claude Code, Codex) has been connected from here; the OAuth sign-in flow is tested against a local stand-in server. Figma's remote server may refuse apps it has not approved. Google can refuse sign-in inside embedded browsers; the background browser presents itself as plain Chrome to avoid that, without a guarantee.
-- Antigravity has no MCP server or web app to connect to; it is a desktop IDE, so Memo reaches it only through on-screen agent mode.
+- Kiro CLI and Kiro Crew were not available here. The ACP client is tested against a stand-in agent written from the protocol as I understand it; `kiro-cli acp` as the start command, and how Kiro Crew is started as an ACP agent, are unverified. Vercel, Airtable, Supabase and Companio were not connected either.
+- Antigravity: no preset yet. If its `agy` CLI can serve MCP or ACP, add that command under Connectors or Coding agent.
+- Coder subagents that run at the same time share one working tree; the orchestrator is told to give them separate files, but nothing enforces it.
 - Hotkeys toggle listening rather than push-to-talk, and dictation types phrase by phrase at each pause rather than word by word.
 - One display at a time (the one your cursor is on). Installers are unsigned.
 

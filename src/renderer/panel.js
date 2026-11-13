@@ -54,8 +54,10 @@ function setMode(m) {
   mode = m;
   for (const b of $('modes').children) b.classList.toggle('on', b.dataset.mode === m);
   const hk = S.settings.hotkeys;
-  $('text').placeholder = { ask: 'Ask about your screen…', agent: 'Tell Memo what to do…', dictate: 'Press the mic, then speak into any app' }[m];
+  $('text').placeholder = { ask: 'Ask about your screen…', agent: 'Tell Memo what to do…', crew: 'Give the crew a goal…', dictate: 'Press the mic, then speak into any app' }[m];
   $('text').disabled = $('send').disabled = m === 'dictate';
+  if (m === 'crew' && S.codeAgent.crewCommand) { $('hint').textContent = `Goal is handed to Kiro Crew ("${S.codeAgent.crewCommand}") in ${S.codeAgent.cwd || 'the project folder'}`; return; }
+  if (m === 'crew') { $('hint').textContent = S.codeAgent.enabled && S.codeAgent.cwd ? `Orchestrator + 2–4 subagents · coders run "${S.codeAgent.command}" in ${S.codeAgent.cwd}` : 'Orchestrator + 2–4 subagents · set a project folder in Settings → Coding agent to include coders'; return; }
   $('hint').replaceChildren('Hotkey ', h('kbd', { textContent: pretty(hk[m]) }), m === 'dictate' ? ' toggles dictation. Text lands wherever your cursor is.' : m === 'agent' ? ' · or say "memo agent, …"' : ' · press again when you\'re done talking');
 }
 $('modes').addEventListener('click', (e) => e.target.dataset.mode && setMode(e.target.dataset.mode));
@@ -67,7 +69,7 @@ $('composer').addEventListener('submit', (e) => {
   $('text').value = '';
   call('request', { text, mode });
 });
-$('mic').addEventListener('click', () => call('listen:toggle', { mode }));
+$('mic').addEventListener('click', () => call('listen:toggle', { mode: mode === 'crew' ? 'ask' : mode }));
 $('stop').addEventListener('click', () => call('stop'));
 
 // attachments
@@ -105,6 +107,14 @@ $('walk-next').addEventListener('click', () => call('walk:move', { delta: 1 }));
 $('walk-back').addEventListener('click', () => call('walk:move', { delta: -1 }));
 $('walk-stop').addEventListener('click', () => call('walk:stop'));
 
+function renderCrew(agents) {
+  $('crew').hidden = !agents || !agents.length;
+  if (!agents) return;
+  $('crew-count').textContent = `${agents.filter((a) => a.status === 'done').length} / ${agents.length} done`;
+  $('crew-agents').replaceChildren(...agents.map((a) => h('div', { className: 'agent', title: a.task }, h('div', { className: 'lamp' }),
+    h('div', {}, h('b', { textContent: a.name }), h('span', { textContent: a.note || { waiting: a.phase === 2 ? 'Waiting for the others' : 'Waiting', working: 'Working…', done: 'Done', failed: 'Failed', stopped: 'Stopped' }[a.status] })),
+    h('i', { textContent: a.kind === 'coder' ? 'Kiro' : 'Research' }))).map((n, i) => { n.dataset.status = agents[i].status; return n; }));
+}
 function renderConfirm(c) {
   $('confirm').hidden = !c;
   if (!c) return;
@@ -244,7 +254,7 @@ function renderRoutines() {
   $('routine-list').replaceChildren(...S.routines.map((r) => {
     const last = r.lastRun;
     const info = h('div', { className: 'grow' }, h('b', { textContent: r.name }),
-      h('span', { className: 'meta', textContent: `${r.scheduleText} · ${r.desktop ? 'on screen' : 'background'}` }),
+      h('span', { className: 'meta', textContent: `${r.scheduleText} · ${r.crew ? 'coding crew' : r.desktop ? 'on screen' : 'background'}` }),
       h('span', { className: 'meta', textContent: r.running ? 'Running now…' : r.enabled ? `Next: ${fmtWhen(r.nextRun)}` : 'Paused' }));
     if (last) info.append(h('span', { className: `meta ${last.status === 'ok' ? 'ok' : 'bad'}`, textContent: `${fmtWhen(last.at)}: ${last.summary}`.slice(0, 220) }));
     const act = async (channel, payload) => { try { S = await call(channel, payload); renderRoutines(); } catch (e) { $('routine-note').textContent = clean(e); } };
@@ -262,7 +272,7 @@ function editRoutine(r) {
   editingRoutine = r || null;
   $('routine-form').hidden = !r;
   if (!r) return;
-  $('routine-name').value = r.name; $('routine-task').value = r.task; $('routine-when').value = r.scheduleText; $('routine-desktop').checked = r.desktop;
+  $('routine-name').value = r.name; $('routine-task').value = r.task; $('routine-when').value = r.scheduleText; $('routine-mode').value = r.crew ? 'crew' : r.desktop ? 'desktop' : 'background';
   $('routine-form').scrollIntoView({ behavior: 'smooth' });
 }
 $('routine-cancel').addEventListener('click', () => editRoutine(null));
@@ -270,7 +280,7 @@ $('routine-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('routine-note').textContent = 'Saving…';
   try {
-    S = await call('routine:save', { id: editingRoutine.id, name: $('routine-name').value, task: $('routine-task').value, scheduleText: $('routine-when').value, desktop: $('routine-desktop').checked });
+    S = await call('routine:save', { id: editingRoutine.id, name: $('routine-name').value, task: $('routine-task').value, scheduleText: $('routine-when').value, mode: $('routine-mode').value });
     $('routine-note').textContent = ''; editRoutine(null); renderRoutines();
   } catch (err) { $('routine-note').textContent = clean(err); }
 });
@@ -290,21 +300,27 @@ const ACCOUNTS = [['Google account', 'accounts.google.com'], ['Gmail', 'mail.goo
   ['Notion', 'www.notion.so/login'], ['GitHub', 'github.com/login'], ['Figma', 'www.figma.com/login'], ['ChatGPT', 'chatgpt.com'], ['Claude', 'claude.ai/login']];
 $('account-links').replaceChildren(...ACCOUNTS.map(([name, url]) => h('button', { type: 'button', textContent: name, onclick: () => call('web:connect', { url }) })));
 
-// Ready-made MCP connectors. Clicking one fills the form below; "note" says what the service still needs from you.
+// Ready-made MCP connectors: service, how it connects, and what the user still needs. "Set up" fills the form below.
 const MCP_PRESETS = [
-  { name: 'Notion', type: 'http', url: 'https://mcp.notion.com/mcp', note: 'Press Connect, then approve MemoBrOS in the Notion page that opens in your browser.' },
-  { name: 'GitHub', type: 'http', url: 'https://api.githubcopilot.com/mcp/', needsToken: true, note: 'Paste a GitHub personal access token (github.com/settings/tokens) as the access token, then Connect.' },
-  { name: 'Google Workspace', type: 'stdio', command: 'uvx workspace-mcp --tool-tier core', env: 'GOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=', note: 'Gmail, Drive, Docs, Sheets, Slides, Calendar, Forms, Tasks and Chat. Needs "uv" installed and a Google Cloud OAuth client (Desktop app): fill in its ID and secret. Google sign-in opens on first use.' },
-  { name: 'Figma', type: 'http', url: 'https://mcp.figma.com/mcp', note: 'Press Connect and sign in to Figma in your browser. If Figma refuses the app, use "Figma desktop" instead.' },
-  { name: 'Figma desktop', type: 'http', url: 'http://127.0.0.1:3845/mcp', note: 'Needs the Figma desktop app open with its MCP server enabled (Dev Mode → MCP).' },
-  { name: 'Claude Code', type: 'stdio', command: 'claude mcp serve', note: 'Lets Memo hand work to Claude Code. Needs the "claude" CLI installed and signed in.' },
-  { name: 'ChatGPT (Codex)', type: 'stdio', command: 'codex mcp-server', note: 'Lets Memo hand work to OpenAI\'s Codex agent with your ChatGPT sign-in. Needs the "codex" CLI installed and signed in.' },
+  { name: 'Notion', type: 'http', url: 'https://mcp.notion.com/mcp', how: 'Remote server, sign-in opens in your browser', need: 'Approve MemoBrOS on Notion\'s page' },
+  { name: 'GitHub', type: 'http', url: 'https://api.githubcopilot.com/mcp/', needsToken: true, how: 'Remote server', need: 'A personal access token (github.com/settings/tokens)' },
+  { name: 'Google Workspace', type: 'stdio', command: 'uvx workspace-mcp --tool-tier core', env: 'GOOGLE_OAUTH_CLIENT_ID=\nGOOGLE_OAUTH_CLIENT_SECRET=', how: 'Local workspace-mcp server (Gmail, Drive, Docs, Sheets, Slides, Calendar, Forms, Tasks, Chat)', need: 'uv installed and your own Google Cloud OAuth client ID and secret' },
+  { name: 'Figma', type: 'http', url: 'https://mcp.figma.com/mcp', how: 'Remote server, sign-in opens in your browser', need: 'Figma may refuse apps it hasn\'t approved; "Figma desktop" is the fallback' },
+  { name: 'Figma desktop', type: 'http', url: 'http://127.0.0.1:3845/mcp', how: 'The desktop app\'s local server', need: 'Figma desktop open with its MCP server enabled (Dev Mode)' },
+  { name: 'Vercel', type: 'http', url: 'https://mcp.vercel.com', how: 'Remote server, sign-in opens in your browser', need: 'A Vercel account; Vercel may refuse apps it hasn\'t approved' },
+  { name: 'Airtable', type: 'http', url: 'https://mcp.airtable.com/mcp', how: 'Remote server, sign-in opens in your browser', need: 'Approve MemoBrOS in Airtable, or paste a personal access token' },
+  { name: 'Supabase', type: 'http', url: 'https://mcp.supabase.com/mcp', how: 'Remote server, sign-in opens in your browser', need: 'A Supabase account; add ?read_only=true to the URL to keep it from changing data' },
+  { name: 'Companio', type: 'http', url: 'https://companio-api.byafluence.com/mcp', how: 'Remote server, sign-in opens in your browser', need: 'Your Companio account' },
+  { name: 'Claude', type: 'stdio', command: 'claude mcp serve', how: 'claude mcp serve', need: 'The claude CLI installed and signed in' },
+  { name: 'ChatGPT', type: 'stdio', command: 'codex mcp-server', how: 'codex mcp-server (OpenAI\'s Codex agent)', need: 'The codex CLI installed and signed in' },
 ];
-$('mcp-presets').replaceChildren(...MCP_PRESETS.map((p) => h('button', { type: 'button', textContent: p.name, onclick: () => {
-  $('mcp-name').value = p.name; $('mcp-type').value = p.type; $('mcp-command').value = p.command || ''; $('mcp-url').value = p.url || ''; $('mcp-env').value = p.env || ''; $('mcp-token').value = '';
-  showMcpKind(); $('mcp-note').textContent = p.note;
-  $('mcp-form').scrollIntoView({ behavior: 'smooth' }); (p.needsToken ? $('mcp-token') : p.env ? $('mcp-env') : $('mcp-name')).focus();
-} })));
+$('mcp-presets').replaceChildren(...MCP_PRESETS.map((p) => h('div', { className: 'item' },
+  h('div', { className: 'grow' }, h('b', { textContent: p.name }), h('span', { className: 'meta', textContent: p.how }), h('span', { className: 'meta', textContent: `Needs: ${p.need}` })),
+  h('button', { type: 'button', textContent: 'Set up', onclick: () => {
+    $('mcp-name').value = p.name; $('mcp-type').value = p.type; $('mcp-command').value = p.command || ''; $('mcp-url').value = p.url || ''; $('mcp-env').value = p.env || ''; $('mcp-token').value = '';
+    showMcpKind(); $('mcp-note').textContent = `Needs: ${p.need}`;
+    $('mcp-form').scrollIntoView({ behavior: 'smooth' }); (p.needsToken ? $('mcp-token') : p.env ? $('mcp-env') : $('mcp-name')).focus();
+  } }))));
 
 // ---- custom MCP servers -----------------------------------------------------------------
 function renderMcp() {
@@ -358,6 +374,7 @@ function renderSettings() {
   $('stt-cloud').hidden = s.sttProvider !== 'cloud';
   $('set-lang').replaceChildren(...Object.entries(LANGS).map(([value, textContent]) => h('option', { value, textContent })));
   $('set-lang').value = s.language;
+  $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-crew-cmd').value = s.codeAgent.crewCommand || '';
   $('set-autostart').checked = !!s.launchAtLogin;
   $('set-speak').checked = s.speak; $('set-polish').checked = s.dictationPolish; $('set-confirm-each').checked = s.confirmEachAction;
   fillVoices();
@@ -369,6 +386,7 @@ function showProvider() {
   $('dict-model-row').hidden = p !== 'anthropic';
 }
 $('set-provider').addEventListener('change', showProvider);
+$('code-browse').addEventListener('click', async () => { S = await call('project:pick'); $('set-code-cwd').value = S.settings.codeAgent.cwd; });
 async function findModels(provider, listId, noteId, inputId) {
   $(noteId).textContent = 'Loading…';
   try {
@@ -391,6 +409,7 @@ $('settings-form').addEventListener('submit', async (e) => {
       providers: { openrouter: { model: $('set-or-model').value.trim() || 'openrouter/free' }, omniroute: { baseUrl: $('set-omni-url').value.trim() || 'http://localhost:20128/v1', model: $('set-omni-model').value.trim() || 'auto' } },
       model: $('set-model').value, dictationModel: $('set-dict-model').value, sttProvider: $('set-stt').value,
       sttBaseUrl: $('set-stt-url').value.trim(), sttCloudModel: $('set-stt-model').value.trim(), language: $('set-lang').value,
+      codeAgent: { command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), crewCommand: $('set-crew-cmd').value.trim() },
       launchAtLogin: $('set-autostart').checked,
       speak: $('set-speak').checked, voice: $('set-voice').value, dictationPolish: $('set-polish').checked, confirmEachAction: $('set-confirm-each').checked,
       hotkeys: Object.fromEntries(Object.keys(HOTKEY_LABELS).map((k) => [k, $(`hk-${k}`).value.trim()])),
@@ -418,6 +437,7 @@ window.memo.on((e) => {
   else if (e.type === 'status') renderStatus(e);
   else if (e.type === 'walk') renderWalk(e.walk);
   else if (e.type === 'confirm') renderConfirm(e.confirm);
+  else if (e.type === 'crew') renderCrew(e.agents);
   else if (e.type === 'state') { S = e.state; renderSkills(); renderMemory(); renderRoutines(); renderMcp(); }
   else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else stopRec(true); }
 });

@@ -30,6 +30,10 @@
       <ol id="walk-steps"></ol>
       <div class="row"><button id="walk-back" class="ghost">Back</button><button id="walk-stop" class="ghost danger">End</button><button id="walk-next" class="primary grow">Next step</button></div>
     </div>
+    <div id="crew" class="card" hidden>
+      <div class="card-title"><span>Crew</span><span id="crew-count" class="muted"></span></div>
+      <div id="crew-agents"></div>
+    </div>
     <div id="confirm" class="card attention" hidden>
       <div class="card-title" id="confirm-title"></div>
       <div id="confirm-text"></div>
@@ -40,6 +44,7 @@
     <div id="modes" role="tablist">
       <button data-mode="ask" class="on" title="Ask about what's on your screen">Ask</button>
       <button data-mode="agent" title="Let Memo do it for you (with your approval)">Agent</button>
+ <button data-mode="crew" title="An orchestrator splits the goal between 2–4 subagents (Kiro CLI coders, background researchers)">Crew</button>
       <button data-mode="dictate" title="Speak into the focused text field of any app">Dictate</button>
     </div>
     <form id="composer">
@@ -61,7 +66,7 @@
       <label>Name<input id="routine-name" required maxlength="60"></label>
       <label>What to do<textarea id="routine-task" rows="4" required></textarea></label>
       <label>When (plain words)<input id="routine-when" required placeholder="every weekday at 9 AM"></label>
-      <label class="check"><input type="checkbox" id="routine-desktop">Needs my screen (uses the mouse and keyboard, asks before starting)</label>
+      <label>Runs as<select id="routine-mode"><option value="background">Background (private browser and connected tools)</option><option value="desktop">On my screen (mouse and keyboard, asks before starting)</option><option value="crew">Coding crew (Kiro CLI in the project folder)</option></select></label>
       <div class="row"><button type="button" id="routine-cancel" class="ghost">Cancel</button><button type="submit" class="primary grow">Save routine</button></div>
     </form>
     <h3>Connected accounts</h3>
@@ -127,6 +132,13 @@
       <label id="dict-model-row">Polish model<select id="set-dict-model"><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option><option value="claude-haiku-5-5">Claude Haiku 5.5 (fastest)</option></select></label>
       <h3>Agent mode</h3>
       <label class="check"><input type="checkbox" id="set-confirm-each">Ask before every single action (not only the plan)</label>
+      <h3>Coding agent (ACP)</h3>
+      <p class="muted small">Crew mode drives this agent over the Agent Client Protocol. Kiro CLI by default; any ACP agent command works.</p>
+      <label>Command<input id="set-code-cmd" placeholder="kiro-cli acp"></label>
+      <label>Project folder<input id="set-code-cwd" placeholder="/home/you/projects/app"></label>
+      <div class="row" style="margin-top:6px"><button type="button" id="code-browse">Browse…</button></div>
+      <label>Kiro Crew command (optional)<input id="set-crew-cmd" placeholder="leave empty to let MemoBrOS orchestrate"></label>
+      <p class="muted small">If you run Kiro Crew, enter the command that starts it as an ACP agent. Crew mode then hands it the whole goal and Kiro Crew coordinates its own agents; MemoBrOS keeps memory, scheduling and approvals.</p>
       <h3>System</h3>
       <label class="check"><input type="checkbox" id="set-autostart">Start MemoBrOS with the system, hidden (keeps routines running)</label>
       <h3>Hotkeys</h3>
@@ -137,8 +149,8 @@
     <h3>Custom tools (MCP)</h3>
     <p class="muted small">Connect databases, scripts or internal APIs through the Model Context Protocol, then use them by voice. Tools that change things ask first.</p>
     <div id="mcp-list"></div>
-    <p class="muted small" style="margin-top:8px">One-click connectors:</p>
-    <div id="mcp-presets" class="links"></div>
+    <h3>Connectors</h3>
+    <div id="mcp-presets"></div>
     <form id="mcp-form" class="card">
       <div class="card-title">Add a server</div>
       <label>Name<input id="mcp-name" required maxlength="40" placeholder="Sales database"></label>

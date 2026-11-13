@@ -1,5 +1,5 @@
 // Recurring routines: scheduled tasks that run in the background, with guardrails.
-// A routine is { id, name, task, cron | at, scheduleText, desktop, enabled, plan, allowed[], nextRun, lastRun, history[] }.
+// A routine is { id, name, task, cron | at, scheduleText, desktop, crew, enabled, plan, allowed[], nextRun, lastRun, history[] }.
 const fs = require('fs');
 const store = require('./store');
 const cron = require('./cron');
@@ -29,7 +29,7 @@ function fromDraft(d) {
     name: String(d.name || d.task || 'Routine').trim().slice(0, 60),
     task: String(d.task || '').trim(),
     cron: null, at: null, scheduleText: String(d.schedule_text || '').trim(),
-    desktop: !!d.needs_screen, enabled: true, plan: d.plan || '', allowed: [], lastRun: null, history: [],
+    desktop: !!d.needs_screen && !d.use_crew, crew: !!d.use_crew, enabled: true, plan: d.plan || '', allowed: [], lastRun: null, history: [],
   };
   if (!r.task) throw new Error('The routine needs a task.');
   applySchedule(r, d);
@@ -54,7 +54,7 @@ function setEnabled(id, enabled) { return patch(id, (r) => { r.enabled = !!enabl
 async function addFromText(text) { return add(await brain.draftRoutine(text)); }
 
 // Editor save. A changed schedule may be plain words (the model converts it) or a raw cron line.
-async function update({ id, name, task, scheduleText, desktop }) {
+async function update({ id, name, task, scheduleText, mode }) {
   const current = list().find((r) => r.id === id);
   if (!current) throw new Error('That routine no longer exists.');
   let schedule = null;
@@ -65,7 +65,7 @@ async function update({ id, name, task, scheduleText, desktop }) {
   return patch(id, (r) => {
     if (name) r.name = String(name).trim().slice(0, 60);
     if (task) r.task = String(task).trim();
-    if (desktop !== undefined) r.desktop = !!desktop;
+    if (mode) { r.desktop = mode === 'desktop'; r.crew = mode === 'crew'; }
     if (schedule) applySchedule(r, { cron: schedule.cron, run_once_at: schedule.run_once_at, schedule_text: schedule.schedule_text || wanted });
   });
 }
@@ -148,7 +148,8 @@ async function run(id) {
   deps.changed?.();
   let result;
   try {
-    if (routine.desktop) result = await deps.runDesktop(routine);
+    if (routine.crew) result = await deps.runCrew(routine);
+    else if (routine.desktop) result = await deps.runDesktop(routine);
     else result = { status: 'ok', summary: await brain.runRoutine({ routine, tools: toolset(), exec: guardedExec(routine), signal: running.abort.signal }) };
   } catch (e) {
     result = { status: e.aborted ? 'stopped' : 'error', summary: e.message || String(e) };
@@ -178,6 +179,9 @@ async function runOnce(task) {
   return result;
 }
 
+// A background worker for crew mode: same tools and guardrails as a routine, under the given name.
+const worker = (name, task, signal) => brain.runRoutine({ routine: { id: `worker-${Date.now()}`, name, task }, tools: toolset(), exec: guardedExec({ id: null, name }), signal });
+
 function tick() {
   if (running) return;
   const now = new Date();
@@ -204,4 +208,4 @@ function init(d) {
 const stop = () => running?.abort.abort();
 const view = () => list().map((r) => ({ ...r, running: running?.id === r.id }));
 
-module.exports = { runOnce, init, view, add, addFromText, addFromChat, update, remove, setEnabled, run, stop, tick, mcpWithApproval, fromDraft };
+module.exports = { worker, runOnce, init, view, add, addFromText, addFromChat, update, remove, setEnabled, run, stop, tick, mcpWithApproval, fromDraft };

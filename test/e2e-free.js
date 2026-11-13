@@ -84,7 +84,9 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
     });
   });
 
-  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-project-'));
+  const acpLog = () => fs.readFileSync(path.join(project, 'acp-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ codeAgent: { command: `node "${path.join(__dirname, 'fixtures', 'fake-acp-agent.js')}"`, cwd: project }, providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
   const app = await _electron.launch({
     executablePath: process.env.MEMOBROS_BIN || require('electron'), args: [...(process.env.MEMOBROS_BIN ? [] : [root]), '--no-sandbox'],
     env: { ...process.env, OPENROUTER_API_KEY: 'or-test-key', ANTHROPIC_API_KEY: '', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1' },
@@ -248,13 +250,18 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       assert.ok(!oauthLog.includes('GET /authorize'), 'no second sign-in');
       // presets and account shortcuts are offered in the UI
       await panel.click('#tabs [data-tab="settings"]');
-      assert.deepEqual(await panel.locator('#mcp-presets button').allInnerTexts(), ['Notion', 'GitHub', 'Google Workspace', 'Figma', 'Figma desktop', 'Claude Code', 'ChatGPT (Codex)']);
-      await panel.click('#mcp-presets button:text-is("Google Workspace")');
+      assert.deepEqual(await panel.locator('#mcp-presets b').allInnerTexts(), ['Notion', 'GitHub', 'Google Workspace', 'Figma', 'Figma desktop', 'Vercel', 'Airtable', 'Supabase', 'Companio', 'Claude', 'ChatGPT']);
+      const setUp = (name) => panel.locator('#mcp-presets .item', { has: panel.locator(`b:text-is("${name}")`) }).locator('button').click();
+      await setUp('Companio');
+      assert.equal(await panel.locator('#mcp-url').inputValue(), 'https://companio-api.byafluence.com/mcp');
+      for (const [n, u] of [['Vercel', 'https://mcp.vercel.com'], ['Airtable', 'https://mcp.airtable.com/mcp'], ['Supabase', 'https://mcp.supabase.com/mcp']]) { await setUp(n); assert.equal(await panel.locator('#mcp-url').inputValue(), u); }
+      await setUp('Google Workspace');
       assert.equal(await panel.locator('#mcp-command').inputValue(), 'uvx workspace-mcp --tool-tier core');
       assert.match(await panel.locator('#mcp-env').inputValue(), /GOOGLE_OAUTH_CLIENT_ID=/);
-      await panel.click('#mcp-presets button:text-is("Notion")');
+      await setUp('Notion');
       assert.equal(await panel.locator('#mcp-url').inputValue(), 'https://mcp.notion.com/mcp');
-      await panel.locator('#mcp-form').screenshot({ path: path.join(out, 'panel-connectors.png') });
+      await panel.locator('#mcp-presets').scrollIntoViewIfNeeded();
+      await panel.screenshot({ path: path.join(out, 'panel-connectors.png') });
       await panel.click('#tabs [data-tab="routines"]');
       assert.ok((await panel.locator('#account-links button').allInnerTexts()).includes('Google account'));
     });
@@ -274,6 +281,82 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       assert.ok(/Chrome\//.test(ua) && !/Electron|memobros/i.test(ua), `background browser presents as plain Chrome (${ua})`);
       assert.ok(await overlay.evaluate(() => { const i = document.querySelector('#buddy img'); return i.complete && i.naturalWidth === 256; }), 'custom cursor image is shown');
       await overlay.screenshot({ path: path.join(out, 'overlay-cursor.png') });
+    });
+
+    await check('crew: orchestrator splits the goal between subagents; Kiro-style coders run over ACP with approvals; results are merged', async () => {
+      api.state.script = [
+        () => [text(JSON.stringify({ agents: [
+          { name: 'Backend', kind: 'coder', phase: 1, task: 'WRITE the API module' },
+          { name: 'Docs scout', kind: 'researcher', phase: 1, task: `Read ${site.url}/ and note the page title` },
+          { name: 'Reviewer', kind: 'coder', phase: 2, task: 'Review what Backend built' },
+        ] }))],
+        () => [use('browser_open', { url: `${site.url}/` })],
+        () => [text('The docs page is titled Expenses.')],
+        () => [text('The crew built the API module and reviewed it.')],
+      ];
+      await send('crew', 'build the expenses API and check the docs');
+      await until(async () => (await confirmTitle()).includes('Backend wants to: Write api.js'), 'approval card for the coding agent');
+      assert.equal(await panel.locator('#crew-agents .agent').count(), 3);
+      assert.ok(!fs.existsSync(path.join(project, 'api.js')), 'nothing written before approval');
+      await panel.screenshot({ path: path.join(out, 'panel-crew.png') });
+      await panel.click('#confirm-yes');
+      await until(async () => (await lastMemo()).includes('built the API module and reviewed it'), 'crew report', 30000);
+      assert.equal(fs.readFileSync(path.join(project, 'api.js'), 'utf8'), '// written by Backend\n');
+      assert.equal(await panel.locator('#crew-count').innerText(), '3 / 3 done');
+      const log = acpLog();
+      const sessions = log.filter((l) => l.session);
+      assert.equal(sessions.length, 2, 'one ACP session per coder');
+      assert.ok(sessions[0].mcpServers.some((m) => m.name === 'Sales DB' && m.command === 'node'), 'local MCP servers are handed to the coding agent');
+      assert.ok(sessions[0].mcpServers.some((m) => m.name === 'Weather' && m.headers[0].value === 'Bearer tok-123'), 'token-based remote servers too');
+      assert.ok(!sessions[0].mcpServers.some((m) => m.name === 'Workspace'), 'browser-sign-in servers are not handed over');
+      const review = log.find((l) => l.name === 'Reviewer').text;
+      assert.match(review, /Backend report: wrote api\.js \(yes\)/, 'phase-2 agent sees phase-1 results');
+      assert.match(review, /The docs page is titled Expenses/);
+      const synth = api.state.requests.at(-1).body.messages.at(-1).content;
+      assert.match(synth, /## Reviewer \(coder\) — done/); assert.match(synth, /## Docs scout \(researcher\) — done/);
+      assert.match(api.state.requests[0].body.messages[0].content, /two to four subagents[\s\S]*"coder"[\s\S]*"researcher"/);
+
+      // the 2–4 rule: one planned agent gets a reviewer added, six are cut to four; by voice prefix and via the model's tool
+      api.state.script = [() => [text('{"agents":[{"name":"Solo","kind":"coder","phase":1,"task":"tidy the readme"}]}')], () => [text('Tidied and checked.')]];
+      await main(() => global.__memo.route('memo crew, tidy the readme', 'ask'));
+      await until(async () => (await lastMemo()).includes('Tidied and checked'), 'second crew report', 30000);
+      assert.deepEqual(await panel.locator('#crew-agents b').allInnerTexts(), ['Solo', 'Reviewer']);
+      api.state.script = [
+        () => [use('start_crew', { goal: 'refactor everything' })], () => [text('Starting the crew.')],
+        () => [text(JSON.stringify({ agents: [1, 2, 3, 4, 5, 6].map((n) => ({ name: `A${n}`, kind: 'coder', phase: 1, task: `part ${n}` })) }))], () => [text('All four parts done.')],
+      ];
+      await send('ask', 'refactor everything with the crew');
+      await until(async () => (await lastMemo()).includes('All four parts done'), 'third crew report', 30000);
+      assert.equal(await panel.locator('#crew-agents .agent').count(), 4);
+
+      // a refused permission is reported, and a missing coding agent fails that subagent without sinking the rest
+      fs.rmSync(path.join(project, 'api.js'));
+      api.state.script = [() => [text('{"agents":[{"name":"Writer","kind":"coder","phase":1,"task":"WRITE again"},{"name":"Checker","kind":"coder","phase":2,"task":"check"}]}')], () => [text('Nothing was written.')]];
+      await send('crew', 'write it again');
+      await until(async () => (await confirmTitle()).includes('Writer wants to'), 'approval card');
+      await panel.click('#confirm-no');
+      await until(async () => (await lastMemo()).includes('Nothing was written'), 'report after refusal', 30000);
+      assert.ok(!fs.existsSync(path.join(project, 'api.js')));
+      assert.match(acpLog().filter((l) => l.name === 'Checker').at(-1).text, /write was refused/);
+      await invoke('settings:save', { settings: { codeAgent: { command: 'definitely-not-installed-agent acp' } } });
+      api.state.script = [() => [text(JSON.stringify({ agents: [{ name: 'Coder', kind: 'coder', phase: 1, task: 'code' }, { name: 'Scout', kind: 'researcher', phase: 1, task: 'look' }] }))], () => [text('Scout found it.')], () => [text('The coder could not start; the scout finished.')]];
+      await send('crew', 'try with a broken agent');
+      await until(async () => (await lastMemo()).includes('coder could not start'), 'report with a failed subagent', 30000);
+      assert.match(api.state.requests.at(-1).body.messages.at(-1).content, /## Coder \(coder\) — failed\n"definitely-not-installed-agent" is not installed/);
+      // with a Kiro Crew command set, the whole goal is handed to that platform as one ACP session; approvals still come here
+      const fixture = `node "${path.join(__dirname, 'fixtures', 'fake-acp-agent.js')}"`;
+      await invoke('settings:save', { settings: { codeAgent: { command: fixture, crewCommand: fixture } } });
+      api.state.requests.length = 0;
+      api.state.script = [() => [text('Kiro Crew finished the job.')]];
+      await send('crew', 'WRITE the whole feature');
+      await until(async () => (await confirmTitle()).includes('Kiro Crew wants to: Write api.js'), 'approval card from the delegated crew');
+      await panel.click('#confirm-always');
+      await until(async () => (await lastMemo()).includes('Kiro Crew finished the job'), 'report from the delegated crew', 30000);
+      assert.deepEqual(await panel.locator('#crew-agents b').allInnerTexts(), ['Kiro Crew']);
+      assert.equal(api.state.requests.length, 1, 'MemoBrOS does not split the goal itself when Kiro Crew orchestrates');
+      assert.match(api.state.requests[0].body.messages.at(-1).content, /wrote api\.js \(always\)/);
+      assert.match(acpLog().at(-1).text, /^WRITE the whole feature/);
+      await invoke('settings:save', { settings: { codeAgent: { crewCommand: '' } } });
     });
 
     let expenseId;

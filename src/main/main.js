@@ -21,6 +21,7 @@ const llm = require('./llm');
 const mcp = require('./mcp');
 const web = require('./webagent');
 const routines = require('./routines');
+const crew = require('./crew');
 
 let overlay, panel, tray;
 let task = null;            // { abort: AbortController } — the request currently running
@@ -176,6 +177,7 @@ function doAsk(text) {
         ...hooksFor(shot),
         startWalkthrough: (w) => { next = () => startWalkthrough(w); },
         startAgent: (t) => { next = () => doAgent(t, true); },
+        startCrew: (goal) => { next = () => doCrew(goal, true); },
         createRoutine: (draft) => describeRoutine(routines.add(draft)),
         runBackground: (t) => {
           setImmediate(() => routines.runOnce(t).catch((e) => toPanel({ type: 'message', role: 'error', text: e.message })));
@@ -312,9 +314,39 @@ async function doAgent(taskText, quiet = false, opts = {}) {
   return result;
 }
 
+// ---- crew mode: orchestrator + 2–4 subagents (Kiro CLI over ACP, background researchers) -----------
+// Resolves { status, summary }.
+async function doCrew(goal, quiet = false, opts = {}) {
+  if (!goal.trim()) { say('What should the crew work on? Say "memo crew" followed by the goal.'); return { status: 'error', summary: 'No goal given.' }; }
+  if (!quiet) toPanel({ type: 'message', role: 'user', text: goal, tag: opts.routine ? `Routine · ${opts.routine.name}` : 'Crew' });
+  let result = { status: 'stopped', summary: 'Stopped before finishing.' };
+  await run(async (signal) => {
+    status('acting', 'Crew · planning');
+    try {
+      const summary = await crew.run({
+        goal, signal,
+        io: {
+          update: (agents) => {
+            toPanel({ type: 'crew', agents: agents.map(({ name, kind, phase, status: st, note, task }) => ({ name, kind, phase, status: st, note, task })) });
+            const working = agents.filter((a) => a.status === 'working').length;
+            status('acting', `Crew · ${agents.filter((a) => a.status === 'done').length}/${agents.length} done${working ? `, ${working} working` : ''}`);
+          },
+          confirm: (title, text, o = {}) => confirm(title, text, { notify: true, timeoutMs: 15 * 60 * 1000, ...o }),
+        },
+      });
+      result = { status: 'ok', summary };
+      say(summary, 'Crew report');
+    } catch (e) {
+      if (!e.aborted) result = { status: 'error', summary: e.message || String(e) };
+      throw e;
+    }
+  });
+  return result;
+}
+
 // ---- routines --------------------------------------------------------------------------
 const when = (iso) => (iso ? new Date(iso).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'never');
-const describeRoutine = (r) => `Routine "${r.name}" is scheduled: ${r.scheduleText}. First run: ${when(r.nextRun)}. It runs ${r.desktop ? 'on the screen after the user approves the plan' : 'quietly in the background'}. Tell the user that in one sentence.`;
+const describeRoutine = (r) => `Routine "${r.name}" is scheduled: ${r.scheduleText}. First run: ${when(r.nextRun)}. It runs ${r.crew ? 'as a coding crew in the project folder' : r.desktop ? 'on the screen after the user approves the plan' : 'quietly in the background'}. Tell the user that in one sentence.`;
 
 function doRoutineFromText(text) {
   toPanel({ type: 'message', role: 'user', text });
@@ -358,6 +390,7 @@ const NO = /^\W*(no|nope|cancel|stop|don't|cancela|para|detente|non|nein)\b/i;
 const NEXT = /^\W*(next|continue|done|got it|ok|okay|siguiente|listo|ya|contin[uú]a)\b/i;
 const BACK = /^\W*(back|previous|go back|atr[aá]s|anterior)\b/i;
 const AGENT = /^\W*(?:hey[,\s]+)?memo[,\s]+agent\b[\s,:.-]*/i;
+const CREW = /^\W*(?:hey[,\s]+)?memo[,\s]+crew\b[\s,:.-]*/i;
 const RECURRING = /^\W*(every|each|cada|todos los|todas las|tous les|toutes les|jeden|ogni)\b/i; // schedules go straight to the routine maker
 
 function route(text, mode) {
@@ -370,6 +403,8 @@ function route(text, mode) {
     if (NO.test(text)) { walkStop(); return say('Okay, walkthrough closed.'); }
   }
   if (AGENT.test(text)) return doAgent(text.replace(AGENT, ''));
+  if (CREW.test(text)) return doCrew(text.replace(CREW, ''));
+  if (mode === 'crew') return doCrew(text);
   if (RECURRING.test(text)) return doRoutineFromText(text);
   if (mode === 'agent') return doAgent(text);
   return doAsk(text);
@@ -397,7 +432,7 @@ function state() {
   return {
     settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
     keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
-    routines: routines.view(), mcp: mcp.status(), sharedFolders: store.sharedFolders(),
+    routines: routines.view(), mcp: mcp.status(), codeAgent: crew.codeAgent(), sharedFolders: store.sharedFolders(),
     skills: store.listSkills(), pinnedSkillId, memory: store.getMemory(), attachments, walk: walkthrough, listening,
   };
 }
@@ -488,6 +523,11 @@ const handlers = {
     if (!r.canceled && r.filePaths.length) store.saveSettings({ sharedFolders: [...new Set([...store.sharedFolders(), ...r.filePaths])] });
     return state();
   },
+  'project:pick': async () => {
+    const r = await dialog.showOpenDialog(panel, { title: 'Project folder for the coding agent', properties: ['openDirectory'] });
+    if (!r.canceled && r.filePaths[0]) store.saveSettings({ codeAgent: { cwd: r.filePaths[0] } });
+    return state();
+  },
   'folders:remove': ({ folder }) => { store.saveSettings({ sharedFolders: store.sharedFolders().filter((f) => f !== folder) }); return state(); },
 };
 ipcMain.handle('memo', async (_e, channel, payload) => {
@@ -509,11 +549,12 @@ else {
     routines.init({
       confirm, notify, changed: pushState,
       // A due desktop routine waits for the user's own request to finish, then asks before taking the screen.
+      runCrew: async (r) => { while (task) await input.sleep(2000); return doCrew(r.task, false, { routine: r }); },
       runDesktop: async (r) => { while (task) await input.sleep(2000); return doAgent(r.task, false, { routine: r }); },
       announce: (r, entry, speak) => {
         if (speak && entry.status === 'ok') toPanel({ type: 'say', text: entry.summary });
         notify(`Routine "${r.name}" ${{ ok: 'finished', error: 'failed', stopped: 'was stopped', skipped: 'was skipped' }[entry.status] || entry.status}`, entry.summary);
-        if (!r.desktop) toPanel({ type: 'message', role: entry.status === 'error' ? 'error' : 'memo', text: entry.summary, tag: `Routine · ${r.name}` });
+        if (!r.desktop && !r.crew) toPanel({ type: 'message', role: entry.status === 'error' ? 'error' : 'memo', text: entry.summary, tag: `Routine · ${r.name}` });
       },
     });
     mcp.sync().then(pushState).catch((e) => console.error('MCP', e));

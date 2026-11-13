@@ -22,6 +22,7 @@ function systemPrompt(shot, pinnedSkill, extra = '') {
     `Each request comes with a screenshot of the display the user is working on, ${shot.w}x${shot.h} pixels. Every coordinate you give is a pixel position in that screenshot, origin at the top left. A small MemoBrOS panel and your own cursor buddy may appear in the screenshot; they are not part of the user's work.`,
     `When the answer is about something visible on screen, show it rather than only describing it: call point to fly your cursor to the exact control (aim at its center), or draw to circle, box, underline or label things, and then say what to do there. If the thing they need is not on screen, say where to find it instead of pointing at a guess.`,
     `When the user wants to learn a multi-step procedure in an app ("walk me through", "how do I", "teach me"), call start_walkthrough with short imperative steps; the app then takes them through one step at a time and you point at each one. When the user asks you to do something on the computer for them, call start_agent with a clear task description; they will be asked to approve your plan first.`,
+    `When the user asks for software development work in their project, or a goal with several independent parts, call start_crew.`,
     `When the user wants something done repeatedly or at a later time ("every Tuesday at 5 PM…", "each morning…", "tomorrow at 9…"), call create_routine. ${nowLine()}`,
     `When the user tells you something worth keeping for later (a preference, a name, how they like things done), call remember.`,
     memory.length ? `Things you remember about this user:\n${memory.map((m) => `- ${m.note}`).join('\n')}` : '',
@@ -58,10 +59,12 @@ const ROUTINE_PROPS = {
   cron: { type: 'string', description: 'For repeating schedules: 5-field cron in the user\'s local time (minute hour day-of-month month day-of-week), numbers only, Sunday is 0. "Every Tuesday at 5 PM" is "0 17 * * 2".' },
   run_once_at: { type: 'string', description: 'For one-off schedules instead of cron: local date-time like 2026-11-14T09:00' },
   schedule_text: { type: 'string', description: 'The schedule in plain words, in the user\'s language' },
+  use_crew: { type: 'boolean', description: 'true when the task is software development work in the user\'s project (writing or changing code, running tests, reviewing a repository), which the coding crew handles' },
   needs_screen: { type: 'boolean', description: 'true only if the task has to operate desktop apps with the mouse and keyboard; false when background tools (web browser, connected MCP tools) are enough' },
 };
 const CREATE_ROUTINE = tool('create_routine', 'Schedule a task to run automatically, repeating or once, in the background.', ROUTINE_PROPS, ['name', 'task', 'schedule_text']);
 const RUN_IN_BACKGROUND = tool('run_in_background', 'Do a task quietly in the background, without touching the user\'s screen: it uses a private browser signed in to the accounts the user connected (Google Workspace, Notion, GitHub, Figma, ChatGPT, Claude and other sites) and their connected tools. Good for looking things up or doing web tasks while they keep working. The result arrives later as a notification.', { task: { type: 'string', description: 'Complete, self-contained instructions' } });
+const START_CREW = tool('start_crew', 'Hand a larger goal to the crew: an orchestrator that splits it between two to four subagents (coding agents working in the user\'s project folder, and background researchers) and merges their results. Use it for software development work and for goals with several independent parts.', { goal: { type: 'string', description: 'The complete goal, with every detail the user gave' } });
 const START_AGENT = tool('start_agent', 'Hand a task to agent mode, which operates the mouse and keyboard after the user approves the plan.', { task: { type: 'string' } });
 
 // ---- attachments ------------------------------------------------------------
@@ -120,11 +123,12 @@ async function ask({ text, shot, attachments, pinnedSkill, hooks, signal }) {
   const reply = await turn({
     system: systemPrompt(shot, pinnedSkill),
     content: [...attachmentBlocks(attachments), shotBlock(shot), { type: 'text', text }],
-    tools: [POINT, DRAW, START_WALKTHROUGH, START_AGENT, RUN_IN_BACKGROUND, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
+    tools: [POINT, DRAW, START_WALKTHROUGH, START_AGENT, START_CREW, RUN_IN_BACKGROUND, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
     handlers: {
       ...baseHandlers(hooks),
       create_routine: (i) => hooks.createRoutine(i),
       run_in_background: (i) => hooks.runBackground(i.task),
+      start_crew: (i) => { hooks.startCrew(i.goal); return 'The crew is starting; progress shows in the panel. Say one short sentence acknowledging.'; },
       __other: (name, input) => hooks.callTool(name, input),
       start_walkthrough: async (i) => { hooks.startWalkthrough(i); return 'Walkthrough queued. The app will start step 1 right after you finish speaking; just give a one-sentence intro now.'; },
       start_agent: async (i) => { hooks.startAgent(i.task); return 'Agent mode queued; the user will see your plan and approve it. Say one short sentence acknowledging.'; },
@@ -252,6 +256,37 @@ async function runRoutine({ routine, tools, exec, signal }) {
   return `${report} (Stopped after 25 steps without finishing.)`.trim();
 }
 
+// ---- crew: the orchestrator's two jobs -----------------------------------------------------
+function firstJson(text) {
+  const m = /\{[\s\S]*\}/.exec(text);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { return null; }
+}
+
+async function planCrew({ goal, kinds, project, signal }) {
+  const kindHelp = {
+    coder: `"coder": a coding agent (Kiro CLI) working in the project folder${project ? ` ${project}` : ''}. It reads and writes code, runs commands and tests, and uses git.`,
+    researcher: '"researcher": a background worker with a private web browser signed in to the user\'s connected accounts and their connected tools (Notion, GitHub, Google Workspace, databases…). It looks things up and does web tasks; it cannot edit local code.',
+  };
+  const res = await call({
+    system: `You are the orchestrator of a small crew of AI agents inside MemoBrOS. Split the user's goal into parts for two to four subagents. ${nowLine()}\n\nAgent kinds available:\n${kinds.map((k) => `- ${kindHelp[k]}`).join('\n')}\n\nGive each agent a self-contained task: it sees only its own task, the goal and the other agents' task titles. Agents in phase 1 run at the same time, so give coders separate files or areas. Put work that depends on the others' results (review, testing the whole, a summary) in phase 2. Use as few agents as the goal needs, but at least two.\n\nReply with only JSON: {"agents":[{"name":"short role name","kind":"${kinds.join('|')}","phase":1,"task":"…"}]}`,
+    messages: [{ role: 'user', content: goal }],
+    effort: 'medium', signal,
+  });
+  const plan = firstJson(textOf(res));
+  if (!plan) throw new Error('The orchestrator did not return a usable plan. Try again, or pick a stronger model in Settings.');
+  return plan;
+}
+
+async function crewReport({ goal, agents, signal }) {
+  const res = await call({
+    system: 'You are the orchestrator of a crew of AI agents inside MemoBrOS. The subagents have finished. Tell the user the outcome in two to four plain spoken sentences, in their language: what got done, what did not, and what needs their attention. Be accurate about failures; do not smooth them over.',
+    messages: [{ role: 'user', content: `Goal: ${goal}\n\n${agents.map((a) => `## ${a.name} (${a.kind}) — ${a.status}\n${a.result}`).join('\n\n')}` }],
+    effort: 'low', signal,
+  });
+  return textOf(res) || agents.map((a) => `${a.name}: ${a.status}`).join('. ');
+}
+
 // ---- 4: dictation polish ------------------------------------------------------
 async function polish(raw, signal) {
   const res = await call({
@@ -263,4 +298,4 @@ async function polish(raw, signal) {
   return refused(res) ? raw : textOf(res) || raw;
 }
 
-module.exports = { ask, walkStep, plan, runAgent, polish, resetHistory, draftRoutine, runRoutine, hasKey: () => llm.ready() };
+module.exports = { ask, walkStep, plan, runAgent, polish, resetHistory, draftRoutine, runRoutine, planCrew, crewReport, hasKey: () => llm.ready() };
