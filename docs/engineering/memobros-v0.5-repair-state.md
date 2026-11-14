@@ -64,6 +64,14 @@ See the end of this file.
 worktrees 8/8 · voice 7/7 · speech-models 11/11 · pointer 4/4 · e2e 9/9 · e2e-free 13/13 · e2e-desktop 13/13 ·
 speech-real 4/4 (source tree and installed .deb).
 
+### Milestone 3 (done, committed): first results from the target laptop
+
+Confirmed by the user on Ubuntu 26.04 / GNOME 50 / Wayland with v0.5.1: Tiny and Base download and reach "Ready";
+the wake word arms and triggers; speech is transcribed; **screen capture works on native Wayland** (the model
+described the screen). Found there and fixed: a Spanish request after the wake word was decoded as English
+("What was very my pantaya?") because the language was taken from whichever Tiny attempt caught the name; the
+chosen model now decides the language from the phrase itself. Replies no longer show raw markdown marks.
+
 ### Still open
 
 1. **Exit 133 root cause in the old engine: unidentified** (see findings 1-3). The engine is gone; the question

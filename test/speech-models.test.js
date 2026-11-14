@@ -141,19 +141,27 @@ test('language policy: detection is trusted only for the user\'s languages, and 
   assert.equal(calls.splice(0).join(), 'base:es');
 });
 
-test('wake word: the small model listens in each preferred language; the chosen model decodes the command', async () => {
+test('wake word: the small model only finds the name; the chosen model decides the language of the request', async () => {
   const wake = require('../src/main/wake');
   const calls = [];
-  const run = (answers) => async (model, language) => { calls.push(`${model}:${language}`); return { text: answers[`${model}:${language}`] || '', lang: language }; };
+  const run = (answers) => async (model, language) => { calls.push(`${model}:${language || 'detect'}`); return answers[`${model}:${language || 'detect'}`] || { text: '', lang: language }; };
   const match = (t) => wake.match(t, 'ARVI');
-  let hit = await policy.detectWake(run({ 'tiny:es': 'Arbi abre visual estudio cod', 'base:es': 'ARVI, abre Visual Studio Code.' }), { wakeModel: 'tiny', mainModel: 'base', preferred: ['es', 'en'], match });
-  assert.deepEqual([hit.command, hit.lang, calls.splice(0).join()], ['abre Visual Studio Code.', 'es', 'tiny:es,base:es'], 'found in Spanish, command refined by the larger model');
-  hit = await policy.detectWake(run({ 'tiny:es': 'a ver jai de window', 'tiny:en': 'RV, hide the window' }), { wakeModel: 'tiny', mainModel: 'tiny', preferred: ['es', 'en'], match });
-  assert.deepEqual([hit.command, hit.lang, calls.splice(0).join()], ['hide the window', 'en', 'tiny:es,tiny:en'], 'found in English on the second try; no second model when Tiny is the chosen one');
-  hit = await policy.detectWake(run({ 'tiny:es': 'vamos a comer', 'tiny:en': 'we are going to eat' }), { wakeModel: 'tiny', mainModel: 'small', preferred: ['es', 'en'], match });
-  assert.deepEqual([hit, calls.splice(0).join()], [null, 'tiny:es,tiny:en'], 'ordinary speech never reaches the large model');
-  hit = await policy.detectWake(run({ 'tiny:es': 'Arvi oculta la ventana', 'base:es': 'y oculta la ventana' }), { wakeModel: 'tiny', mainModel: 'base', preferred: ['es'], match });
-  assert.equal(hit.command, 'oculta la ventana', 'if the larger model loses the wake word, the first decoding is used');
+  const opts = (mainModel, preferred = ['es', 'en']) => ({ wakeModel: 'tiny', mainModel, preferred, match });
+  // the reported case: Spanish speech, the name caught only by the English attempt → the request is still decoded as Spanish
+  let hit = await policy.detectWake(run({ 'tiny:es': { text: 'a ver analiza mi pantalla' }, 'tiny:en': { text: 'RV what was very my pantaya' }, 'base:detect': { text: 'Arvi, analiza mi pantalla.', lang: 'es' } }), opts('base'));
+  assert.deepEqual([hit.command, hit.lang, calls.splice(0).join()], ['analiza mi pantalla.', 'es', 'tiny:es,tiny:en,base:detect']);
+  // English request
+  hit = await policy.detectWake(run({ 'tiny:es': { text: 'Arvi open visual estudio cod' }, 'base:detect': { text: 'ARVI, open Visual Studio Code.', lang: 'en' } }), opts('base'));
+  assert.deepEqual([hit.command, hit.lang, calls.splice(0).join()], ['open Visual Studio Code.', 'en', 'tiny:es,base:detect']);
+  // detection names a language the user does not speak → decoded in their first language, never English by default
+  hit = await policy.detectWake(run({ 'tiny:es': { text: 'Arvi oculta la venta' }, 'base:detect': { text: 'อาควิ', lang: 'th' }, 'base:es': { text: 'Arvi, oculta la ventana', lang: 'es' } }), opts('base'));
+  assert.deepEqual([hit.command, hit.lang, calls.splice(0).join()], ['oculta la ventana', 'es', 'tiny:es,base:detect,base:es']);
+  // ordinary speech never reaches the larger model
+  hit = await policy.detectWake(run({ 'tiny:es': { text: 'vamos a comer' }, 'tiny:en': { text: 'we are going to eat' } }), opts('small'));
+  assert.deepEqual([hit, calls.splice(0).join()], [null, 'tiny:es,tiny:en']);
+  // if the larger model loses the name, the first decoding is used
+  hit = await policy.detectWake(run({ 'tiny:es': { text: 'Arvi oculta la ventana' }, 'base:detect': { text: 'y oculta la ventana', lang: 'es' } }), opts('base', ['es']));
+  assert.equal(hit.command, 'oculta la ventana');
 });
 
 (async () => {

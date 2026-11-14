@@ -49,7 +49,9 @@ const activity = { mic: false, screen: false, control: false }; // what MemoBrOS
 
 const toPanel = (event) => panel && !panel.isDestroyed() && panel.webContents.send('memo:event', event);
 const toOverlay = (event) => overlay && !overlay.isDestroyed() && overlay.webContents.send('memo:event', event);
-const say = (text, tag) => { if (!text) return; toPanel({ type: 'message', role: 'memo', text, tag }); toPanel({ type: 'say', text }); toOverlay({ type: 'caption', text }); };
+// Replies are spoken and shown as plain text, so formatting marks some models add anyway are removed.
+const plainText = (t) => String(t || '').replace(/\*\*|__|`+/g, '').replace(/^\s*#{1,6}\s+/gm, '').replace(/^\s*[-*]\s+/gm, '• ').trim();
+const say = (text, tag) => { text = plainText(text); if (!text) return; toPanel({ type: 'message', role: 'memo', text, tag }); toPanel({ type: 'say', text }); toOverlay({ type: 'caption', text }); };
 const status = (kind, text = '') => { toOverlay({ type: 'status', kind, text }); toPanel({ type: 'status', kind, text }); };
 const notify = (title, body) => { try { if (Notification.isSupported()) new Notification({ title, body: String(body || '').slice(0, 300) }).show(); } catch { /* no notification daemon */ } };
 const pinnedSkill = () => store.listSkills().find((s) => s.id === pinnedSkillId) || null;
