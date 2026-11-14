@@ -60,4 +60,38 @@ class ExtensionPointer {
   async stop() { clearInterval(this.heartbeat); if (this.available) { await this.call('SetFollow', 'false', str(''), 0, 0, 0); await this.call('Clear'); } }
 }
 
-module.exports = { ExtensionPointer };
+// ---- installing the optional GNOME Shell extension from inside the app ------------------------------
+// Each step runs only after the user approves it in MemoBrOS. Installing copies two files into the user's own
+// extensions folder; enabling asks GNOME to load it; removing disables it and deletes those files.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const UUID = 'memobros-pointer@memobros.app';
+const source = () => path.join(__dirname, '..', '..', 'gnome-extension', UUID);
+const target = () => path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'gnome-shell', 'extensions', UUID);
+const gnome = (...args) => new Promise((resolve) => execFile('gnome-extensions', args, { timeout: 5000 }, (err, stdout, stderr) => resolve({ ok: !err, out: `${stdout}${stderr}`.trim() })));
+
+async function extensionStatus() {
+  const installed = fs.existsSync(path.join(target(), 'extension.js'));
+  const info = installed ? await gnome('info', UUID) : { ok: false, out: '' };
+  // GNOME only notices a newly copied extension at the next login, so "installed but unknown" means: log in again.
+  return { uuid: UUID, folder: target(), installed, known: info.ok, enabled: info.ok && /(Enabled|Habilitad[oa]|Activad[oa]):\s*(Yes|Sí|Si)|State:\s*(ENABLED|ACTIVE)|Estado:\s*(ACTIVA|HABILITADA|ENABLED|ACTIVE)/i.test(info.out) };
+}
+function installExtension() {
+  fs.mkdirSync(target(), { recursive: true });
+  for (const f of fs.readdirSync(source())) fs.writeFileSync(path.join(target(), f), fs.readFileSync(path.join(source(), f)));
+  return extensionStatus();
+}
+async function enableExtension() {
+  const r = await gnome('enable', UUID);
+  if (!r.ok) throw new Error(/exist|existe/i.test(r.out) ? 'GNOME does not know the extension yet. Log out and log in again, then press Enable.' : `GNOME could not enable the extension: ${r.out || 'the gnome-extensions tool is not available'}`);
+  return extensionStatus();
+}
+async function removeExtension() {
+  await gnome('disable', UUID);
+  fs.rmSync(target(), { recursive: true, force: true });
+  return extensionStatus();
+}
+
+module.exports = { ExtensionPointer, extensionStatus, installExtension, enableExtension, removeExtension };

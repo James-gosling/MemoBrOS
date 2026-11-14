@@ -490,15 +490,30 @@ function renderPointer() {
   $('pointer-status').textContent = {
     overlay: 'Drawn by MemoBrOS above your windows. It points at things when Memo answers; it never clicks by itself.',
     'gnome-extension': 'Drawn by the MemoBrOS Pointer GNOME extension above your windows. It only draws; it never clicks or types.',
-    none: S.platform === 'linux' ? 'Not available in native Wayland mode without the optional MemoBrOS Pointer GNOME extension (in a terminal: npm run pointer:install, then follow what it prints), or switch to X11 mode under Permissions. Until then Memo names the control instead of pointing.' : 'Not available.',
+    none: S.platform === 'linux' ? 'Not available in native Wayland mode without the optional MemoBrOS Pointer GNOME extension (install it below), or switch to X11 mode under Permissions. Until then Memo names the control instead of pointing.' : 'Not available.',
   }[p.backend];
   $('set-pointer-follow').checked = !!p.follow; $('set-pointer-follow').disabled = p.backend === 'none';
   $('set-pointer-size').value = p.size; $('set-pointer-x').value = p.offsetX; $('set-pointer-y').value = p.offsetY;
-  $('pointer-detect').hidden = p.backend === 'overlay';
+  renderPointerExt();
 }
+// The optional GNOME extension: shown only where MemoBrOS cannot draw over other windows itself (native Wayland).
+let extStatus = null;
+async function renderPointerExt(st) {
+  const show = S.platform === 'linux' && !S.caps.overlay;
+  $('pointer-ext').hidden = !show;
+  if (!show) return;
+  extStatus = st || extStatus || await call('pointer:extension'); // asked once, then only after an action or "Check again"
+  const x = extStatus;
+  $('pointer-ext-status').textContent = !x.installed ? 'Not installed. It comes with MemoBrOS; installing copies it into your GNOME extensions folder.'
+    : !x.known ? 'Installed. Log out and log in again so GNOME notices it, then press Enable.'
+      : !x.enabled ? 'Installed, switched off.' : S.pointer.backend === 'gnome-extension' ? 'Installed and active.' : 'Installed and switched on, but not answering yet. Press Check again, or log out and in.';
+  $('pointer-ext-install').hidden = x.installed; $('pointer-ext-enable').hidden = !x.installed || x.enabled; $('pointer-ext-remove').hidden = !x.installed;
+  if (x.message !== undefined) $('pointer-ext-note').textContent = x.message;
+}
+for (const step of ['install', 'enable', 'remove']) $(`pointer-ext-${step}`).addEventListener('click', async () => { const st = await call(`pointer:${step}`); S = await call('state:get'); renderPointer(); renderPointerExt(st); });
 const savePointer = async () => { S = await call('pointer:set', { follow: $('set-pointer-follow').checked, size: Number($('set-pointer-size').value) || 48, offsetX: Number($('set-pointer-x').value) || 0, offsetY: Number($('set-pointer-y').value) || 0 }); renderPointer(); };
 for (const id of ['set-pointer-follow', 'set-pointer-size', 'set-pointer-x', 'set-pointer-y']) $(id).addEventListener('change', savePointer);
-$('pointer-detect').addEventListener('click', async () => { S = await call('pointer:detect'); renderPointer(); });
+$('pointer-detect').addEventListener('click', async () => { extStatus = null; S = await call('pointer:detect'); renderPointer(); });
 
 function renderPermissions() {
   for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).checked = !!S.settings.permissions[k];
@@ -620,7 +635,7 @@ window.memo.on((e) => {
   else if (e.type === 'shutup') shutUp();
   else if (e.type === 'status') renderStatus(e);
   else if (e.type === 'walk') { if (e.walk) needFull(); renderWalk(e.walk); }
-  else if (e.type === 'confirm') { if (e.confirm) needFull(); renderConfirm(e.confirm); }
+  else if (e.type === 'confirm') { if (e.confirm) { needFull(); showTab('chat'); } renderConfirm(e.confirm); } // an approval must be seen: bring its card to the front
   else if (e.type === 'crew') renderCrew(e.agents);
   else if (e.type === 'state') { S = e.state; renderChrome(); renderPermissions(); renderPointer(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderGateway(); }
   else if (e.type === 'listen') { if (e.mode) { shutUp(); startRec(e.mode); } else endRec(true); }

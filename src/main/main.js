@@ -28,6 +28,7 @@ const routines = require('./routines');
 const wake = require('./wake');
 const apps = require('./apps');
 const { ExtensionPointer } = require('./pointer');
+const pointerExt = require('./pointer');
 const crew = require('./crew');
 const gateway = require('./gateway');
 
@@ -716,6 +717,29 @@ const handlers = {
   // assistant pointer
   'pointer:set': (cfg) => { store.saveSettings({ pointer: cfg }); applyPointer(); return state(); },
   'pointer:detect': async () => { await detectPointer(); return state(); },
+  // the optional GNOME Shell pointer extension: every step needs the user's approval in the panel
+  'pointer:extension': () => pointerExt.extensionStatus(),
+  'pointer:install': async () => {
+    const st = await pointerExt.extensionStatus();
+    if (!(await confirm('Install the MemoBrOS Pointer extension for GNOME?', `It lets GNOME draw Memo's pointer above your windows. It only draws: it never clicks, types, reads windows or captures the screen, and it hides itself if MemoBrOS stops.\n\nThis copies two files to:\n${st.folder}\n\nIt is not switched on by this step.`))) return { ...st, message: 'Not installed.' };
+    return { ...(await pointerExt.installExtension()), message: 'Installed. Log out and log in again so GNOME notices it, then press Enable.' };
+  },
+  'pointer:enable': async () => {
+    if (!(await confirm('Switch on the MemoBrOS Pointer extension?', 'GNOME will load the extension now. You can switch it off again here or in the GNOME Extensions app.'))) return { ...(await pointerExt.extensionStatus()), message: 'Not switched on.' };
+    try {
+      const st = await pointerExt.enableExtension();
+      await input.sleep(1500);
+      await detectPointer();
+      return { ...st, message: pointerBackend() === 'gnome-extension' ? 'Switched on. The pointer is active.' : 'Switched on. If the pointer does not appear, log out and in once more.' };
+    } catch (e) { return { ...(await pointerExt.extensionStatus()), message: e.message }; }
+  },
+  'pointer:remove': async () => {
+    if (!(await confirm('Remove the MemoBrOS Pointer extension?', 'It will be switched off and its files deleted.'))) return { ...(await pointerExt.extensionStatus()), message: '' };
+    await extPointer?.stop();
+    const st = await pointerExt.removeExtension();
+    await detectPointer();
+    return { ...st, message: 'Removed.' };
+  },
   // on-device speech models
   'speech:status': () => stt.engine.models().all(),
   'speech:download': ({ model }) => { stt.engine.models().ensure(model).catch(() => {}); return stt.engine.models().all(); }, // outcome arrives as events

@@ -22,5 +22,15 @@ case "$method" in
 esac
 `);
   fs.chmodSync(path.join(dir, 'gdbus'), 0o755);
+  // and a stand-in `gnome-extensions`: knows any extension, and remembers whether it was enabled
+  fs.writeFileSync(path.join(dir, 'gnome-extensions'), `#!/bin/sh
+echo "gnome-extensions $*" >> "${log}"
+case "$1" in
+  enable) touch "${path.join(dir, 'enabled')}";;
+  disable) rm -f "${path.join(dir, 'enabled')}";;
+  info) if [ -f "${path.join(dir, 'enabled')}" ]; then echo "  State: ACTIVE"; else echo "  State: INITIALIZED"; fi;;
+esac
+`);
+  fs.chmodSync(path.join(dir, 'gnome-extensions'), 0o755);
   return { dir, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []) };
 };

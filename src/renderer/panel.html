@@ -143,7 +143,12 @@
       <div id="pointer-status" class="muted small"></div>
       <label class="check"><input type="checkbox" id="set-pointer-follow">Follow my cursor (the assistant's pointer accompanies the real one; it never replaces it)</label>
       <div class="row"><label class="grow">Size<input id="set-pointer-size" type="number" min="24" max="128"></label><label class="grow">Offset right<input id="set-pointer-x" type="number" min="-200" max="200"></label><label class="grow">Offset down<input id="set-pointer-y" type="number" min="-200" max="200"></label></div>
-      <div class="row" style="margin-top:6px"><button type="button" id="pointer-detect">Check again</button></div>
+      <div id="pointer-ext" class="card" hidden>
+        <div class="card-title">GNOME pointer extension (optional)</div>
+        <div id="pointer-ext-status" class="small"></div>
+        <div class="row"><button type="button" id="pointer-ext-install">Install…</button><button type="button" id="pointer-ext-enable">Enable…</button><button type="button" id="pointer-ext-remove" class="ghost danger">Remove…</button><button type="button" id="pointer-detect" class="ghost">Check again</button></div>
+        <div id="pointer-ext-note" class="muted small"></div>
+      </div>
       <h3>Wake word</h3>
       <p class="muted small">Say the word, then your request, in Spanish or English: "ARVI, abre Visual Studio Code", "ARVI, analyze my screen". Detection runs on this computer; audio that is not addressed to the assistant is discarded and never sent anywhere.</p>
       <label class="check"><input type="checkbox" id="set-wake">Listen for the wake word</label>

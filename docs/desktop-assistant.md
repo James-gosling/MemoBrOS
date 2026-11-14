@@ -160,6 +160,11 @@ highlight frame). It reads the pointer position to follow it and the monitor lay
 not inject input, read window contents or capture the screen, and it hides everything if MemoBrOS stops
 answering for 15 seconds.
 
+The extension ships with MemoBrOS (it arrives with `git pull` and is inside the packages). In native Wayland
+mode, **Settings → Pointer** shows a "GNOME pointer extension" box with **Install…**, **Enable…** and
+**Remove…**. Each asks for your approval first. Install copies two files into your own GNOME extensions folder;
+then log out and in once so GNOME notices it, and press Enable. The same from a terminal:
+
 ```bash
 npm run pointer:install          # copies it to ~/.local/share/gnome-shell/extensions; does not enable it
 # log out and in again, then:
