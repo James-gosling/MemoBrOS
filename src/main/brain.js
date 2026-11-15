@@ -22,6 +22,7 @@ function systemPrompt(shot, pinnedSkill, extra = '') {
     `Each request comes with a screenshot of the display the user is working on, ${shot.w}x${shot.h} pixels. Every coordinate you give is a pixel position in that screenshot, origin at the top left. A small MemoBrOS panel and your own cursor buddy may appear in the screenshot; they are not part of the user's work.`,
     `When the answer is about something visible on screen, show it rather than only describing it: call point to fly your cursor to the exact control (aim at its center), or draw to circle, box, underline or label things, and then say what to do there. If the thing they need is not on screen, say where to find it instead of pointing at a guess.`,
     `When the user wants to learn a multi-step procedure in an app ("walk me through", "how do I", "teach me"), call start_walkthrough with short imperative steps; the app then takes them through one step at a time and you point at each one. When the user asks you to do something on the computer for them, call start_agent with a clear task description; they will be asked to approve your plan first.`,
+    `When the user asks for something a command answers or does (the state of their project, running tests, listing files), call run_command with one plain command and report what it actually printed. Never claim a command ran or succeeded unless its result says so.`,
     `When the user asks for software development work in their project, or a goal with several independent parts, call start_crew.`,
     `When the user wants something done repeatedly or at a later time ("every Tuesday at 5 PM…", "each morning…", "tomorrow at 9…"), call create_routine. ${nowLine()}`,
     `When the user tells you something worth keeping for later (a preference, a name, how they like things done), call remember.`,
@@ -66,6 +67,7 @@ const CREATE_ROUTINE = tool('create_routine', 'Schedule a task to run automatica
 const RUN_IN_BACKGROUND = tool('run_in_background', 'Do a task quietly in the background, without touching the user\'s screen: it uses a private browser signed in to the accounts the user connected (Google Workspace, Notion, GitHub, Figma, ChatGPT, Claude and other sites) and their connected tools. Good for looking things up or doing web tasks while they keep working. The result arrives later as a notification.', { task: { type: 'string', description: 'Complete, self-contained instructions' } });
 const START_CREW = tool('start_crew', 'Hand a larger goal to the crew: an orchestrator that splits it between two to four subagents (coding agents working in the user\'s project folder, and background researchers) and merges their results. Use it for software development work and for goals with several independent parts.', { goal: { type: 'string', description: 'The complete goal, with every detail the user gave' } });
 const OPEN_APP = tool('open_app', 'Open an application that is installed on the user\'s computer, by name (for example "Visual Studio Code").', { name: { type: 'string' } });
+const RUN_COMMAND = require('./actions').TOOL;
 const START_AGENT = tool('start_agent', 'Hand a task to agent mode, which operates the mouse and keyboard after the user approves the plan.', { task: { type: 'string' } });
 
 // ---- attachments ------------------------------------------------------------
@@ -124,11 +126,12 @@ async function ask({ text, shot, attachments, pinnedSkill, hooks, signal }) {
   const reply = await turn({
     system: systemPrompt(shot, pinnedSkill),
     content: [...attachmentBlocks(attachments), shotBlock(shot), { type: 'text', text }],
-    tools: [POINT, DRAW, OPEN_APP, START_WALKTHROUGH, START_AGENT, START_CREW, RUN_IN_BACKGROUND, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
+    tools: [POINT, DRAW, OPEN_APP, RUN_COMMAND, START_WALKTHROUGH, START_AGENT, START_CREW, RUN_IN_BACKGROUND, CREATE_ROUTINE, USE_SKILL, REMEMBER, ...(hooks.extraTools || [])],
     handlers: {
       ...baseHandlers(hooks),
       create_routine: (i) => hooks.createRoutine(i),
       open_app: (i) => hooks.openApp(i.name),
+      run_command: (i) => hooks.runCommand(i),
       run_in_background: (i) => hooks.runBackground(i.task),
       start_crew: (i) => { hooks.startCrew(i.goal); return 'The crew is starting; progress shows in the panel. Say one short sentence acknowledging.'; },
       __other: (name, input) => hooks.callTool(name, input),

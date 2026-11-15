@@ -95,9 +95,9 @@ async function mcpWithApproval(name, input, who) {
 
 const REQUEST_APPROVAL = { name: 'request_approval', description: 'Pause and ask the user to approve something hard to undo or that reaches other people (sending, posting, paying, deleting). Returns their answer.', input_schema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] } };
 const REMEMBER = { name: 'remember', description: 'Save a short note to long-term memory.', input_schema: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] } };
-const toolset = () => [...web.TOOLS, ...mcp.forModel(), REQUEST_APPROVAL, REMEMBER];
+const toolset = () => [...web.TOOLS, ...mcp.forModel(), require('./actions').TOOL, REQUEST_APPROVAL, REMEMBER];
 
-function guardedExec(routine) {
+function guardedExec(routine, signal) {
   const who = `Routine "${routine.name}"`;
   const submitOk = async (label) => {
     const key = `submit:${web.origin()}`;
@@ -132,6 +132,7 @@ function guardedExec(routine) {
         return web.upload(i.id, file);
       }
       case 'request_approval': return (await ask(`${who} needs your OK`, String(i.question))) ? 'The user approved. Go ahead.' : DECLINED;
+      case 'run_command': return deps.runCommand({ command: i.command, cwd: i.cwd, why: i.why, who, signal, confirmOpts: { timeoutMs: APPROVAL_WAIT, notify: true } });
       case 'remember': store.addMemory(i.note); deps.changed?.(); return 'Saved.';
       default:
         if (name.startsWith('mcp__')) return mcpWithApproval(name, i, who);
@@ -151,7 +152,7 @@ async function run(id) {
   try {
     if (routine.crew) result = await deps.runCrew(routine);
     else if (routine.desktop) result = await deps.runDesktop(routine);
-    else result = { status: 'ok', summary: await brain.runRoutine({ routine, tools: toolset(), exec: guardedExec(routine), signal: running.abort.signal }) };
+    else result = { status: 'ok', summary: await brain.runRoutine({ routine, tools: toolset(), exec: guardedExec(routine, running.abort.signal), signal: running.abort.signal }) };
   } catch (e) {
     result = { status: e.aborted ? 'stopped' : 'error', summary: e.message || String(e) };
   }
@@ -173,7 +174,7 @@ async function runOnce(task) {
   const job = { id: `once-${Date.now()}`, name: 'Background task', task, desktop: false };
   running = { id: job.id, abort: new AbortController() };
   let result;
-  try { result = { status: 'ok', summary: await brain.runRoutine({ routine: job, tools: toolset(), exec: guardedExec(job), signal: running.abort.signal }) }; }
+  try { result = { status: 'ok', summary: await brain.runRoutine({ routine: job, tools: toolset(), exec: guardedExec(job, running.abort.signal), signal: running.abort.signal }) }; }
   catch (e) { result = { status: e.aborted ? 'stopped' : 'error', summary: e.message || String(e) }; }
   running = null;
   deps.announce?.(job, { at: new Date().toISOString(), ...result }, true);
@@ -181,7 +182,7 @@ async function runOnce(task) {
 }
 
 // A background worker for crew mode: same tools and guardrails as a routine, under the given name.
-const worker = (name, task, signal) => brain.runRoutine({ routine: { id: `worker-${Date.now()}`, name, task }, tools: toolset(), exec: guardedExec({ id: null, name }), signal });
+const worker = (name, task, signal) => brain.runRoutine({ routine: { id: `worker-${Date.now()}`, name, task }, tools: toolset(), exec: guardedExec({ id: null, name }, signal), signal });
 
 function tick() {
   if (running || paused) return;

@@ -479,6 +479,72 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       await invoke('settings:save', { settings: { codeAgent: { cwd: project } } });
     });
 
+    await check('local actions: commands run for real only with permission and approval; dangerous ones never; results are the true output; Stop cancels', async () => {
+      const toolResult = () => api.state.requests.at(-1).body.messages.filter((m) => m.role === 'tool').at(-1).content;
+      const audit = () => fs.readFileSync(path.join(userData, 'actions.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      assert.equal((await invoke('state:get')).settings.permissions.commands, false, 'running commands is off until allowed');
+      // first use asks for the capability, then for the command itself
+      api.state.script = [() => [use('run_command', { command: 'node -e "console.log(6 * 7); console.error(\'warn\'); process.exit(3)"', why: 'check the build' })], () => [text('It printed 42 and exited with 3.')]];
+      await send('ask', 'run the check');
+      await until(async () => (await confirmTitle()) === 'Let MemoBrOS run commands on this computer?', 'capability consent');
+      await panel.click('#confirm-yes');
+      await until(async () => (await confirmTitle()) === 'Memo wants to run a command', 'command approval card');
+      const card = await panel.locator('#confirm-text').innerText();
+      assert.match(card, /node -e "console\.log\(6 \* 7\)/); assert.ok(card.includes(`Folder: ${project}`) && card.includes('Why: check the build'));
+      assert.ok(await panel.locator('#confirm-always').isHidden(), 'no "always allow" for an interpreter');
+      await panel.screenshot({ path: path.join(out, 'panel-command-approval.png') });
+      await panel.click('#confirm-yes');
+      await until(async () => (await lastMemo()).includes('printed 42'), 'answer');
+      assert.match(toolResult(), /^exit code 3 in [\d.]+ s\nstdout:\n42\nstderr:\nwarn$/, 'the model receives the real exit code and output');
+      // never run, and no card is even shown
+      api.state.script = [() => [use('run_command', { command: 'sudo rm -rf /' })], () => [text('I cannot do that.')]];
+      await send('ask', 'wipe it');
+      await until(async () => (await lastMemo()).includes('cannot do that'), 'answer after refusal');
+      assert.match(toolResult(), /Not run\. This command is never run because it asks for administrator rights/);
+      // outside the project folder
+      api.state.script = [() => [use('run_command', { command: 'ls', cwd: os.homedir() })], () => [text('Outside.')]];
+      await send('ask', 'list my home');
+      await until(async () => (await lastMemo()).includes('Outside.'), 'answer');
+      assert.match(toolResult(), /may only run inside/);
+      // declined by the user: nothing happens
+      api.state.script = [() => [use('run_command', { command: 'node -e "require(\'fs\').writeFileSync(\'declined.txt\', \'x\')"' })], () => [text('Okay, not running it.')]];
+      await send('ask', 'write a file');
+      await until(async () => (await confirmTitle()) === 'Memo wants to run a command', 'card'); await panel.click('#confirm-no');
+      await until(async () => (await lastMemo()).includes('not running it'), 'answer');
+      assert.ok(!fs.existsSync(path.join(project, 'declined.txt'))); assert.match(toolResult(), /user did not approve/);
+      // "always allow" for a narrow kind of command, then no card next time
+      api.state.script = [() => [use('run_command', { command: 'git status --short' })], () => [text('Not a repository.')]];
+      await send('ask', 'project status');
+      await until(async () => (await confirmTitle()) === 'Memo wants to run a command', 'card');
+      assert.equal(await panel.locator('#confirm-always').innerText(), 'Always allow "git status"');
+      await panel.click('#confirm-always');
+      await until(async () => (await lastMemo()).includes('Not a repository'), 'answer');
+      assert.match(toolResult(), /^exit code 128/, 'a failing command is reported as failing');
+      assert.deepEqual((await invoke('state:get')).settings.actions.allow, ['git status']);
+      api.state.script = [() => [use('run_command', { command: 'git status' })], () => [text('Same.')]];
+      await send('ask', 'again');
+      await until(async () => (await lastMemo()).includes('Same.'), 'ran without a card');
+      // a shell line is flagged, approved, and really takes effect
+      api.state.script = [() => [use('run_command', { command: 'echo built > result.txt' })], () => [text('Wrote it.')]];
+      await send('ask', 'write the result');
+      await until(async () => (await confirmTitle()) === 'Memo wants to run a command', 'card');
+      assert.match(await panel.locator('#confirm-text').innerText(), /uses shell features/); assert.ok(await panel.locator('#confirm-always').isHidden());
+      await panel.click('#confirm-yes');
+      await until(async () => (await lastMemo()).includes('Wrote it'), 'answer');
+      assert.equal(fs.readFileSync(path.join(project, 'result.txt'), 'utf8').trim(), 'built');
+      // Stop cancels a running command
+      api.state.script = [() => [use('run_command', { command: 'node -e "setInterval(() => {}, 1000)"' })], () => [text('unreachable')]];
+      await send('ask', 'run something long');
+      await until(async () => (await confirmTitle()) === 'Memo wants to run a command', 'card'); await panel.click('#confirm-yes');
+      await until(async () => (await panel.locator('.msg.action').last().innerText()).includes('setInterval'), 'command started');
+      await sleep(500);
+      await panel.click('#stop');
+      await until(() => audit().at(-1).cancelled === true, 'the command was cancelled');
+      const log = audit();
+      assert.deepEqual(log.map((e) => e.decision), ['approved by user', 'denied by policy', 'denied by policy', 'declined by user', 'approved by user', 'allowed by rule', 'approved by user', 'approved by user'], 'every decision is in the audit trail');
+      assert.ok(log.every((e) => e.at && e.who === 'Memo' && e.command));
+    });
+
     let expenseId;
     await check('background routine: reads a web form, uploads a local file only after one-time approval, pauses before submitting', async () => {
       const file = path.join(shared, 'invoice-march.pdf');

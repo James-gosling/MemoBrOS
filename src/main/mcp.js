@@ -64,13 +64,7 @@ const parseEnv = (text) => Object.fromEntries(String(text || '').split('\n').map
 const live = new Map(); // id → { cfg, sig, client, tools, status: 'connecting' | 'connected' | 'error', error }
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24) || 'server';
 
-// "npx -y some-server --flag 'two words'" → ['npx', '-y', 'some-server', '--flag', 'two words']
-function splitCommand(line) {
-  const out = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
-  for (let m; (m = re.exec(line));) out.push(m[1] !== undefined ? m[1].replace(/\\(.)/g, '$1') : m[2] !== undefined ? m[2] : m[3]);
-  return out;
-}
+const { splitCommand } = require('./util/argv');
 
 async function open(cfg, interactive) {
   const newClient = () => new Client({ name: 'MemoBrOS', version: '0.3.0' });

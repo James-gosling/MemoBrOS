@@ -30,6 +30,7 @@ const apps = require('./apps');
 const { ExtensionPointer } = require('./pointer');
 const pointerExt = require('./pointer');
 const crew = require('./crew');
+const actions = require('./actions');
 const gateway = require('./gateway');
 
 let overlay, panel, tray;
@@ -228,6 +229,7 @@ function setPaused(value) {
 const PERMISSIONS = {
   screen: ['Let MemoBrOS look at your screen?', 'When you ask a question or start a task, MemoBrOS takes a screenshot and sends it to the model you chose in Settings. It never captures in the background.'],
   microphone: ['Let MemoBrOS use the microphone?', 'Audio is recorded only while the mic indicator is on. With on-device speech recognition it never leaves this computer.'],
+  commands: ['Let MemoBrOS run commands on this computer?', 'Memo can run commands in your project folder when you ask for something that needs them. You see each command and approve it, unless you choose to always allow that kind. Commands that need administrator rights or could damage the system are never run.'],
   control: ['Let MemoBrOS use the mouse and keyboard?', 'Agent mode clicks and types in other apps, and dictation types what you say. Each agent task still shows its plan and waits for your approval.'],
 };
 // Each capability is off until the user allows it, the first time it is needed. Changeable in Settings → Permissions.
@@ -316,6 +318,7 @@ function doAsk(text) {
         startAgent: (t) => { next = () => doAgent(t, true); },
         startCrew: (goal) => { next = () => doCrew(goal, true); },
         openApp: (name) => `Opened ${apps.open(name)}.`,
+        runCommand: (i) => actions.runCommand({ command: i.command, cwd: i.cwd, why: i.why, signal }),
         createRoutine: (draft) => describeRoutine(routines.add(draft)),
         runBackground: (t) => {
           setImmediate(() => routines.runOnce(t).catch((e) => toPanel({ type: 'message', role: 'error', text: e.message })));
@@ -805,8 +808,9 @@ else {
     createOverlay();
     createPanel();
     createTray();
+    actions.init({ allowed, confirm, toPanel, activity: setActivity });
     routines.init({
-      confirm, notify, changed: pushState,
+      confirm, notify, changed: pushState, runCommand: actions.runCommand,
       // A due desktop routine waits for the user's own request to finish, then asks before taking the screen.
       runCrew: async (r) => { while (task) await input.sleep(2000); return doCrew(r.task, false, { routine: r }); },
       runDesktop: async (r) => { while (task) await input.sleep(2000); return doAgent(r.task, false, { routine: r }); },
@@ -830,4 +834,4 @@ else {
   app.on('before-quit', () => { app.isQuitting = true; extPointer?.stop(); if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 
-if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, stt, get extPointer() { return extPointer; }, wakeMatch: (t) => wake.match(t, store.getSettings().wake.word), worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };
+if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, stt, actions, get extPointer() { return extPointer; }, wakeMatch: (t) => wake.match(t, store.getSettings().wake.word), worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };

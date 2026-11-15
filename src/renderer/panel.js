@@ -516,7 +516,8 @@ for (const id of ['set-pointer-follow', 'set-pointer-size', 'set-pointer-x', 'se
 $('pointer-detect').addEventListener('click', async () => { extStatus = null; S = await call('pointer:detect'); renderPointer(); });
 
 function renderPermissions() {
-  for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).checked = !!S.settings.permissions[k];
+  for (const k of ['screen', 'microphone', 'control', 'commands']) $(`perm-${k}`).checked = !!S.settings.permissions[k];
+  if (document.activeElement !== $('set-actions-allow')) $('set-actions-allow').value = (S.settings.actions.allow || []).join('\n');
   $('perm-control').disabled = !S.caps.control;
   $('perm-note').hidden = S.caps.control && S.caps.overlay;
   $('perm-note-text').textContent = S.caps.control ? '' : 'Mouse and keyboard control and the on-screen pointer are not available in native Wayland mode. X11 mode brings both back, for X11 apps.';
@@ -524,7 +525,8 @@ function renderPermissions() {
 }
 $('display-switch').addEventListener('click', () => call('display:set', { backend: 'x11' }));
 $('mic-test').addEventListener('click', testMic);
-for (const k of ['screen', 'microphone', 'control']) $(`perm-${k}`).addEventListener('change', async (e) => { S = await call('permission:set', { name: k, value: e.target.checked }); renderPermissions(); renderChrome(); });
+$('set-actions-allow').addEventListener('change', async (e) => { S = await call('settings:save', { settings: { actions: { allow: e.target.value.split('\n').map((x) => x.trim().toLowerCase()).filter(Boolean) } } }); renderPermissions(); });
+for (const k of ['screen', 'microphone', 'control', 'commands']) $(`perm-${k}`).addEventListener('change', async (e) => { S = await call('permission:set', { name: k, value: e.target.checked }); renderPermissions(); renderChrome(); });
 $('set-wake').addEventListener('change', async (e) => { S = await call('wake:set', { enabled: e.target.checked }); renderPermissions(); renderChrome(); });
 
 // ---- settings ---------------------------------------------------------------------------

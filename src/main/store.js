@@ -30,7 +30,9 @@ const DEFAULTS = {
   dictationPolish: true,
   confirmEachAction: false,
   // Capabilities are off until the user allows each one, the first time it is needed.
-  permissions: { screen: false, microphone: false, control: false },
+  permissions: { screen: false, microphone: false, control: false, commands: false },
+  // Running commands: kinds the user always allows ("git status"), extra folders besides the project, time limit.
+  actions: { allow: [], roots: [], timeoutSec: 120 },
   // Wake word: local detection, off until switched on. `aliases` adds extra spellings a recogniser may produce.
   wake: { enabled: false, word: 'ARVI', aliases: '', debug: false },
   micDeviceId: '', // which microphone to use; empty means the system default
@@ -72,7 +74,7 @@ function getSettings() {
   if (!settings) {
     const saved = readJson('settings.json', {});
     settings = { ...DEFAULTS, ...saved, hotkeys: { ...DEFAULTS.hotkeys, ...(saved.hotkeys || {}) }, providers: mergeProviders(DEFAULTS.providers, saved.providers), codeAgent: { ...DEFAULTS.codeAgent, ...(saved.codeAgent || {}) }, crewGateway: { ...DEFAULTS.crewGateway, ...(saved.crewGateway || {}) },
-      permissions: { ...DEFAULTS.permissions, ...(saved.permissions || {}) }, wake: { ...DEFAULTS.wake, ...(saved.wake || {}) }, window: { ...DEFAULTS.window, ...(saved.window || {}) }, pointer: { ...DEFAULTS.pointer, ...(saved.pointer || {}) } };
+      permissions: { ...DEFAULTS.permissions, ...(saved.permissions || {}) }, wake: { ...DEFAULTS.wake, ...(saved.wake || {}) }, window: { ...DEFAULTS.window, ...(saved.window || {}) }, pointer: { ...DEFAULTS.pointer, ...(saved.pointer || {}) }, actions: { ...DEFAULTS.actions, ...(saved.actions || {}) } };
   }
   return settings;
 }
@@ -85,7 +87,7 @@ function saveSettings(patch) {
   const next = { ...getSettings(), ...patch };
   if (patch.codeAgent) next.codeAgent = { ...getSettings().codeAgent, ...patch.codeAgent };
   if (patch.crewGateway) next.crewGateway = { ...getSettings().crewGateway, ...patch.crewGateway };
-  for (const k of ['permissions', 'wake', 'window', 'pointer']) if (patch[k]) next[k] = { ...getSettings()[k], ...patch[k] };
+  for (const k of ['permissions', 'wake', 'window', 'pointer', 'actions']) if (patch[k]) next[k] = { ...getSettings()[k], ...patch[k] };
   if (patch.providers) next.providers = mergeProviders(getSettings().providers, patch.providers);
   if (patch.hotkeys) next.hotkeys = { ...getSettings().hotkeys, ...patch.hotkeys };
   settings = next;
