@@ -2,7 +2,7 @@
   "name": "memobros",
   "productName": "MemoBrOS",
   "version": "0.6.0",
-  "description": "MemoBrOS \u2014 a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
+  "description": "MemoBrOS — a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",
   "private": true,
@@ -28,7 +28,8 @@
   },
   "devDependencies": {
     "electron": "^45.3.1",
-    "electron-builder": "^26.18.0"
+    "electron-builder": "^26.18.0",
+    "playwright-core": "1.63.0"
   },
   "author": "MemoBrOS",
   "homepage": "https://github.com/James-gosling/MemoBrOS",

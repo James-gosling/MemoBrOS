@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert');
-const { _electron } = require('playwright');
+const { _electron } = require('./pw');
 const fake = require('./fakeLLM');
 const { text, use } = fake;
 

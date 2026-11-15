@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { execSync } = require('child_process');
-const { _electron } = require('playwright');
+const { _electron } = require('./pw');
 const fakeModels = require('./fakeModels');
 
 const fixtures = process.env.MEMOBROS_SPEECH_FIXTURES || path.join(__dirname, 'fixtures', 'speech');
