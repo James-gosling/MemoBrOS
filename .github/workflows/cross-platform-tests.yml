@@ -23,6 +23,21 @@ jobs:
       - run: node test/speech-models.test.js
       - run: node test/voice.test.js
       - run: node test/worktrees.test.js
+      # The stand-in agent programs are shell scripts on a Unix PATH; the Windows variant has never been run.
+      - if: runner.os == 'Linux'
+        run: node test/agents.test.js
+  # The app itself, driven through its real windows on a virtual display, with a scripted model (no accounts, no cost).
+  electron-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: npm ci
+      - run: xvfb-run -a -s "-screen 0 1280x800x24" node test/e2e.js
+      - run: xvfb-run -a -s "-screen 0 1280x800x24" node test/e2e-free.js
   windows-installer:
     runs-on: windows-latest
     steps:

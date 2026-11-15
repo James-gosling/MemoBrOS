@@ -1,7 +1,7 @@
 {
   "name": "memobros",
   "productName": "MemoBrOS",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "MemoBrOS — a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",

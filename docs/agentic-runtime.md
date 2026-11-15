@@ -29,7 +29,7 @@ Settings → Coding agent → Agent chooses who does the coding in crew mode.
 | Agent | How MemoBrOS runs it | Asks before acting? | Where it may work |
 |---|---|---|---|
 | Kiro CLI (default) | `kiro-cli acp`, the Agent Client Protocol | Yes, each action appears as an approval card | Any project folder |
-| Claude Code | `claude -p … --output-format json --permission-mode acceptEdits` | No: it may only edit files | Git projects only |
+| Claude Code | `claude -p … --output-format stream-json --verbose --permission-mode acceptEdits` | No: it may only edit files | Git projects only |
 | Codex | `codex exec -s workspace-write -C <folder>` | No: sandboxed to its folder | Git projects only |
 | Antigravity (`agy`) | the command you enter, with `{prompt}` | Unknown | Git projects only |
 | Another ACP agent | the command you enter | Yes | Any project folder |
