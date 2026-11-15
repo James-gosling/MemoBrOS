@@ -5,7 +5,7 @@ const path = require('path');
 const assert = require('assert');
 const { execSync } = require('child_process');
 const policy = require('../src/main/actions/policy');
-const { run, summarize, cleanEnv } = require('../src/main/actions/executor');
+const { run, summarize, cleanEnv, resolveWindows } = require('../src/main/actions/executor');
 
 const win = process.platform === 'win32';
 const tests = [];
@@ -21,6 +21,39 @@ test('dangerous commands are refused outright, whatever anyone approves', () => 
     const r = d(line);
     assert.equal(r.decision, 'deny', line); assert.match(r.reason, /never run because/);
   }
+});
+
+test('quoting, full paths, wrappers and nested shells do not hide a forbidden command', () => {
+  for (const line of ['"sudo" ls', "'sudo' ls", '/usr/bin/sudo ls', 'env sudo ls', 'env -i FOO=1 sudo ls', 'FOO=1 sudo ls', 'nohup /sbin/reboot', 'timeout 5 shutdown now', 'nice -n 5 mkfs.ext4 disk.img', 'xargs sudo',
+    'sh -c "sudo ls"', 'bash -lc "rm -rf /"', 'sh -c "sh -c \'pkexec ls\'"', 'cmd /c "format C:"', 'rm --recursive --force /', 'rm -rf "/"', "rm -rf '/home'", 'rm -r -f /usr/', 'chmod --recursive 777 /', 'chown -R me "/etc"',
+    'if true; then sudo ls; fi', 'true && "sudo" ls', 'echo $(doas id)', 'C:\\Windows\\System32\\runas.exe /user:x cmd', `rm -rf ${os.homedir()}`, 'systemctl --no-wall reboot', 'C:\\tools\\diskpart.exe']) {
+    assert.equal(d(line).decision, 'deny', line);
+  }
+  // …while text that merely mentions such a word is an ordinary command
+  for (const line of ['git commit -m "remove sudo usage"', 'grep -r "rm -rf /" docs', 'echo "do not reboot"']) assert.equal(d(line).decision, 'ask', line);
+  assert.deepEqual(policy.commands('FOO=1 env -i timeout 5 sh -c "a && b x"').map((c) => c[0]).filter((w) => /^[a-z]+$/.test(w)), ['env', 'sh', 'timeout', 'sh', 'sh', 'a', 'b']);
+});
+
+test('arguments that reach outside the allowed folders always need approval, even under an "always allow" rule', () => {
+  const c = { roots: [project], allow: ['cat', 'ls', 'git status', 'git log'] };
+  fs.mkdirSync(path.join(project, 'docs'), { recursive: true }); fs.writeFileSync(path.join(project, 'docs', 'a.md'), 'x');
+  try { fs.symlinkSync(os.tmpdir(), path.join(project, 'way-out')); } catch { /* links may need rights on Windows */ }
+  for (const line of ['cat docs/a.md', 'ls docs', 'cat new-file.txt', 'git log --oneline -3', `cat ${path.join(project, 'docs', 'a.md')}`]) assert.equal(d(line, project, c).decision, 'allow', line);
+  const out = win ? ['cat C:\\Windows\\win.ini', 'cat ..\\x'] : ['cat /etc/passwd', 'cat ../x', 'cat docs/../../x', 'git -C /etc status', 'git --git-dir=/tmp/x/.git status', 'cat --file=/etc/hosts'];
+  if (fs.existsSync(path.join(project, 'way-out'))) out.push('cat way-out/anything', 'ls way-out');
+  for (const line of out) { const r = d(line, project, c); assert.equal(r.decision, 'ask', line); assert.match(r.risk, /reaches outside the allowed folders/, line); assert.equal(r.rule, null, line); }
+  for (const line of ['ls ~/Documents', 'ls ~', 'cat $HOME/.ssh/id_rsa']) assert.equal(d(line, project, c).decision, 'ask', line);
+  assert.equal(d('cat https://example.com/a', project, c).decision, 'allow', 'a URL is not a local path');
+  if (fs.existsSync(path.join(project, 'way-out'))) assert.equal(d('ls', path.join(project, 'way-out'), c).decision, 'deny', 'a link out of the folder is not a folder inside it');
+});
+
+test('a standing rule never covers options that make a tool run something else, nor arbitrary scripts or packages', () => {
+  const c = { roots: [project], allow: ['git status', 'npm run', 'npm run test', 'npm exec', 'npx', 'make test', 'find', 'cp'] };
+  assert.equal(d('git status', project, c).decision, 'allow');
+  for (const line of ['git -c core.fsmonitor=evil status', 'git -c alias.status=!evil status', 'git --exec-path=/tmp status', 'git --config-env=core.pager=X status', 'make -f other.mk test', 'make --file=x test',
+    'npm run build', 'npm run', 'npm exec cowsay', 'npx cowsay', 'find . -delete', 'cp a b']) assert.equal(d(line, project, c).decision, 'ask', line);
+  assert.equal(d('npm run test', project, c).decision, 'allow'); assert.equal(d('npm run test -- --watch', project, c).decision, 'allow'); assert.equal(d('make test', project, c).decision, 'allow');
+  assert.equal(policy.ruleFor(['npm', 'run', 'lint']), 'npm run lint'); assert.equal(policy.ruleFor(['yarn', 'dlx', 'x']), null); assert.equal(policy.ruleFor(['git', '-C', 'sub', 'status']), 'git status');
 });
 
 test('ordinary commands are asked about; only what the user chose is allowed without asking', () => {
@@ -79,6 +112,33 @@ test('output is streamed, capped, and the child never sees credentials', async (
   process.env.MEMO_TEST_API_KEY = 'should-not-leak';
   r = await run({ argv: ['node', '-e', 'console.log(process.env.MEMO_TEST_API_KEY || "absent")'], cwd: project });
   assert.equal(r.stdout.trim(), 'absent');
+});
+
+test('output split in the middle of a character arrives whole, and a result is reported exactly once', async () => {
+  const chunks = [];
+  const r = await run({ argv: [process.execPath, '-e', 'process.stdout.write(Buffer.from([0xc3]));setTimeout(()=>process.stdout.write(Buffer.from([0xa1,0xf0,0x9f])),80);setTimeout(()=>process.stdout.write(Buffer.from([0x98,0x80])),160)'], cwd: project, onOutput: (n, t) => chunks.push(t) });
+  assert.equal(r.stdout, 'á😀'); assert.ok(chunks.every((c) => !c.includes('\ufffd')), 'no broken characters reach the listener');
+  const bad = await run({ argv: ['definitely-not-a-program-xyz'], cwd: project, onOutput: () => { throw new Error('listener bug'); } });
+  assert.match(bad.error, /not installed or not on PATH/); assert.equal(bad.exitCode === 0, false);
+  const noisy = await run({ argv: [process.execPath, '-e', 'console.log(1)'], cwd: project, onOutput: () => { throw new Error('listener bug'); } });
+  assert.equal(noisy.exitCode, 0, 'a faulty listener does not break the command');
+});
+
+test('credentials are recognised by name, including access keys, personal tokens and connection strings', () => {
+  const env = { PATH: 'p', HOME: 'h', SSH_AUTH_SOCK: 's', XDG_SESSION_TYPE: 'wayland', DBUS_SESSION_BUS_ADDRESS: 'd', XAUTHORITY: 'x', AWS_ACCESS_KEY_ID: '1', AWS_SECRET_ACCESS_KEY: '2', GITHUB_PAT: '3', GH_TOKEN: '4',
+    DATABASE_URL: '5', SENTRY_DSN: '6', SESSION_COOKIE: '7', OPENAI_API_KEY: '8', GPG_PASSPHRASE: '9', AZURE_STORAGE_CONNECTION_STRING: '10' };
+  assert.deepEqual(Object.keys(cleanEnv(env)), ['PATH', 'HOME', 'SSH_AUTH_SOCK', 'XDG_SESSION_TYPE', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY']);
+  assert.deepEqual(Object.keys(cleanEnv(env, {}, /^OPENAI_/)).slice(-1), ['OPENAI_API_KEY']); assert.ok('GH_TOKEN' in cleanEnv(env, {}, ['GH_TOKEN']));
+});
+
+test('Windows: tools installed as .cmd scripts are started without handing free text to cmd.exe', () => {
+  const files = { 'C:\\npm\\codex.cmd': '@ECHO off\r\n"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n', 'C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js': '', 'C:\\bin\\claude.exe': '', 'C:\\bin\\odd.cmd': 'echo hi', 'C:\\npm\\node.exe': '' };
+  const o = { env: { Path: 'C:\\bin;C:\\npm', PATHEXT: '.COM;.EXE;.BAT;.CMD' }, exists: (f) => f in files, read: (f) => files[f], cwd: 'C:\\work' };
+  assert.deepEqual(resolveWindows(['codex', 'exec', 'fix it & del /s C:\\'], o), ['C:\\npm\\node.exe', 'C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js', 'exec', 'fix it & del /s C:\\'], 'the Node program behind an npm script is started directly');
+  assert.deepEqual(resolveWindows(['claude', '-p', 'a "quoted" task'], o), ['C:\\bin\\claude.exe', '-p', 'a "quoted" task'], 'an .exe is started as it is');
+  assert.deepEqual(resolveWindows(['odd', '--version'], o), ['cmd.exe', '/d', '/s', '/c', 'C:\\bin\\odd.cmd', '--version'], 'another script only with plain arguments');
+  assert.throws(() => resolveWindows(['odd', 'a & b'], o), /cannot be passed to it safely/); assert.throws(() => resolveWindows(['odd', '%PATH%'], o), /cannot be passed to it safely/);
+  assert.deepEqual(resolveWindows(['missing', 'x'], o), ['missing', 'x']);
 });
 
 test('cancelling and timing out stop the command and everything it started', async () => {
