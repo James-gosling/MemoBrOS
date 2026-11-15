@@ -1,0 +1,8 @@
+{
+  "uuid": "memobros-pointer@memobros.app",
+  "name": "MemoBrOS Pointer",
+  "description": "Lets the MemoBrOS assistant show its own pointer and highlights above your windows. It draws only; it never clicks, types, reads window contents or captures the screen. It hides itself if MemoBrOS stops.",
+  "shell-version": ["46", "47", "48", "49", "50"],
+  "url": "https://github.com/James-gosling/MemoBrOS",
+  "version": 1
+}
