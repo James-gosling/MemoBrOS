@@ -12,7 +12,11 @@ const DEFAULTS = {
   },
   // The coding agent MemoBrOS drives over the Agent Client Protocol (ACP). Kiro CLI by default.
   codeAgent: {
-    enabled: true, command: 'kiro-cli acp', cwd: '',
+    enabled: true, cwd: '',
+    agent: 'kiro', // kiro | claude | codex | agy | custom (any other ACP command)
+    command: 'kiro-cli acp', // the ACP command, for kiro and custom
+    agyCommand: '', // Antigravity: the user's own command line containing {prompt}
+    julesRepo: '', // owner/repo for Google Jules (cloud); empty keeps Jules off
     validate: '', // optional check run in each agent's worktree and on the combined result, e.g. "npm test"
     protected: ['.env*', '*.pem', '*.key', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.github/workflows/**'], // agents' changes to these are never auto-integrated
   },

@@ -9,7 +9,7 @@
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && node test/pointer.test.js && node test/actions.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
+    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && node test/pointer.test.js && node test/actions.test.js && node test/agents.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "pack": "electron-builder --dir",

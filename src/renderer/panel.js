@@ -60,7 +60,7 @@ function setMode(m) {
   const hk = S.settings.hotkeys;
   $('text').placeholder = { ask: 'Ask about your screen…', agent: 'Tell Memo what to do…', crew: 'Give the crew a goal…', dictate: 'Press the mic, then speak into any app' }[m];
   $('text').disabled = $('send').disabled = m === 'dictate';
-  if (m === 'crew') { $('hint').textContent = S.codeAgent.enabled && S.codeAgent.cwd ? `Orchestrator + 2–4 subagents · coders run "${S.codeAgent.command}" in ${S.codeAgent.cwd}` : 'Orchestrator + 2–4 subagents · set a project folder in Settings → Coding agent to include coders'; return; }
+  if (m === 'crew') { $('hint').textContent = S.codeAgent.enabled && S.codeAgent.cwd ? `Orchestrator + 2–4 subagents · coders are ${S.codeAgent.name} in ${S.codeAgent.cwd}` : 'Orchestrator + 2–4 subagents · set a project folder in Settings → Coding agent to include coders'; return; }
   $('hint').replaceChildren('Hotkey ', h('kbd', { textContent: pretty(hk[m]) }), m === 'dictate' ? ' toggles dictation. Text lands wherever your cursor is.' : m === 'agent' ? ' · or say "memo agent, …"' : ' · press again when you\'re done talking');
 }
 $('modes').addEventListener('click', (e) => e.target.dataset.mode && setMode(e.target.dataset.mode));
@@ -116,7 +116,7 @@ function renderCrew(agents) {
   $('crew-count').textContent = `${agents.filter((a) => a.status === 'done').length} / ${agents.length} done`;
   $('crew-agents').replaceChildren(...agents.map((a) => h('div', { className: 'agent', title: a.task }, h('div', { className: 'lamp' }),
     h('div', {}, h('b', { textContent: a.name }), h('span', { textContent: a.note || (a.status === 'done' && a.integration) || { waiting: a.phase === 2 ? 'Waiting for the others' : 'Waiting', working: 'Working…', done: 'Done', failed: 'Failed', stopped: 'Stopped' }[a.status] })),
-    h('i', { textContent: a.kind === 'coder' ? 'Kiro' : 'Research' }))).map((n, i) => { n.dataset.status = agents[i].status; return n; }));
+    h('i', { textContent: a.kind === 'coder' ? S.codeAgent.name.split(' ')[0] : 'Research' }))).map((n, i) => { n.dataset.status = agents[i].status; return n; }));
 }
 function renderConfirm(c) {
   $('confirm').hidden = !c;
@@ -564,6 +564,8 @@ function renderSettings() {
     hk.failed.length ? `Not registered: ${hk.failed.join(', ')}. ` : 'All shortcuts registered. ',
     hk.via === 'portal' ? 'On Wayland they go through the desktop\'s shortcuts portal, which asks you to approve them. ' : hk.via === 'x11' && S.session === 'wayland' ? 'Under XWayland they only fire while an X11 window has focus. ' : '',
     'To bind show/hide yourself: GNOME Settings → Keyboard → Custom Shortcuts, command: ', h('kbd', { textContent: hk.fallback }));
+  $('set-code-agent').value = S.codeAgent.agent; $('set-agy-cmd').value = s.codeAgent.agyCommand || ''; $('set-jules-repo').value = s.codeAgent.julesRepo || '';
+  renderAgent();
   $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-code-validate').value = s.codeAgent.validate || ''; $('set-code-protected').value = (s.codeAgent.protected || []).join(', ');
   $('set-gateway-cmd').value = s.crewGateway.command; renderGateway();
   $('set-autostart').checked = !!s.launchAtLogin;
@@ -577,6 +579,17 @@ function showProvider() {
   $('dict-model-row').hidden = p !== 'anthropic';
 }
 $('set-provider').addEventListener('change', showProvider);
+// Which coding agents are installed on this computer (asked once, and again when the choice changes).
+let detected = null;
+async function renderAgent() {
+  const id = $('set-code-agent').value;
+  $('code-cmd-row').hidden = !['kiro', 'custom'].includes(id); $('agy-cmd-row').hidden = id !== 'agy';
+  detected ||= await call('agents:detect');
+  const d = detected.find((a) => a.id === id);
+  const jules = detected.find((a) => a.id === 'jules');
+  $('agent-status').textContent = `${id === 'custom' ? 'Uses the command below.' : d?.installed ? `Installed: ${d.version}.` : 'Not found on this computer. Install it and sign in first.'}${id === 'agy' ? ' Its command-line interface could not be checked; enter the command from its own documentation.' : ''} Jules CLI: ${jules?.installed ? 'installed' : 'not installed'}.`;
+}
+$('set-code-agent').addEventListener('change', renderAgent);
 function renderGateway() {
   const g = S.gateway;
   $('gateway-toggle').textContent = g.state === 'running' ? 'Stop gateway' : 'Start gateway';
@@ -606,7 +619,7 @@ $('settings-form').addEventListener('submit', async (e) => {
       providers: { openrouter: { model: $('set-or-model').value.trim() || 'openrouter/free' }, omniroute: { baseUrl: $('set-omni-url').value.trim() || 'http://localhost:20128/v1', model: $('set-omni-model').value.trim() || 'auto' } },
       model: $('set-model').value, dictationModel: $('set-dict-model').value, sttProvider: $('set-stt').value,
       sttBaseUrl: $('set-stt-url').value.trim(), sttCloudModel: $('set-stt-model').value.trim(), language: $('set-lang').value,
-      codeAgent: { command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), validate: $('set-code-validate').value.trim(), protected: $('set-code-protected').value.split(',').map((x) => x.trim()).filter(Boolean) },
+      codeAgent: { agent: $('set-code-agent').value, agyCommand: $('set-agy-cmd').value.trim(), julesRepo: $('set-jules-repo').value.trim(), command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), validate: $('set-code-validate').value.trim(), protected: $('set-code-protected').value.split(',').map((x) => x.trim()).filter(Boolean) },
       crewGateway: { command: $('set-gateway-cmd').value.trim() },
       launchAtLogin: $('set-autostart').checked, displayBackend: $('set-display').value,
       wake: { word: $('set-wake-word').value.trim() || 'ARVI', aliases: $('set-wake-aliases').value.trim(), debug: $('set-wake-debug').checked },

@@ -10,6 +10,7 @@ const readline = require('readline');
 
 const args = process.argv.slice(2);
 const log = (entry) => fs.appendFileSync(process.env.ACP_LOG || path.join(process.cwd(), 'acp-log.jsonl'), `${JSON.stringify({ pid: process.pid, t: Date.now(), ...entry })}\n`);
+if (args[0] === '--version') { console.log('kiro-cli 1.0.0-standin'); process.exit(0); } // version checks are not agent sessions
 if (!args.includes('acp')) { process.stderr.write('usage: kiro-cli acp\n'); log({ refused: args }); process.exit(2); }
 
 const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);

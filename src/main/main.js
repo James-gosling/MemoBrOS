@@ -31,6 +31,7 @@ const { ExtensionPointer } = require('./pointer');
 const pointerExt = require('./pointer');
 const crew = require('./crew');
 const actions = require('./actions');
+const agents = require('./agents');
 const gateway = require('./gateway');
 
 let overlay, panel, tray;
@@ -324,8 +325,9 @@ function doAsk(text) {
           setImmediate(() => routines.runOnce(t).catch((e) => toPanel({ type: 'message', role: 'error', text: e.message })));
           return 'Started in the background. The user will get the result as a notification and in the panel. Tell them that in one short sentence.';
         },
-        extraTools: mcp.forModel(),
-        callTool: (name, args) => { toPanel({ type: 'message', role: 'action', text: `Using ${name.replace(/^mcp__/, '').replace('__', ' → ')}` }); return routines.mcpWithApproval(name, args, 'Memo'); },
+        extraTools: [...mcp.forModel(), ...(crew.codeAgent().julesRepo ? [JULES_TOOL] : [])],
+        callTool: (name, args) => {
+          if (name === JULES_TOOL.name) return sendToJules(args.task, signal); toPanel({ type: 'message', role: 'action', text: `Using ${name.replace(/^mcp__/, '').replace('__', ' → ')}` }); return routines.mcpWithApproval(name, args, 'Memo'); },
       },
     });
     say(reply);
@@ -489,6 +491,16 @@ async function doCrew(goal, quiet = false, opts = {}) {
     }
   });
   return result;
+}
+
+// ---- Google Jules: a cloud coding agent. Off unless a repository is set; every hand-off is approved. ----
+const JULES_TOOL = { name: 'send_to_jules', description: 'Hand a coding task to Google Jules, a cloud agent that works on the user\'s GitHub repository on Google\'s servers and reports back later. The user approves each hand-off. Use only when they ask for Jules or for cloud/background coding.', input_schema: { type: 'object', properties: { task: { type: 'string', description: 'Complete, self-contained instructions' } }, required: ['task'] } };
+async function sendToJules(task, signal) {
+  const repo = crew.codeAgent().julesRepo;
+  const ok = await confirm('Send this task to Google Jules?', `${task}\n\nRepository: ${repo}\nThis leaves your computer: the task goes to Google's Jules service, which works on that repository with your Jules account.`);
+  if (!ok) return 'The user did not approve sending this to Jules.';
+  toPanel({ type: 'message', role: 'action', text: `Jules: new session for ${repo}` });
+  return `Jules accepted the task. Its own output:\n${await agents.startCloud('jules', { prompt: task, repo, signal })}\nTell the user it runs in the cloud and that results are fetched later with "jules remote pull".`;
 }
 
 // ---- routines --------------------------------------------------------------------------
@@ -743,6 +755,7 @@ const handlers = {
     await detectPointer();
     return { ...st, message: 'Removed.' };
   },
+  'agents:detect': () => agents.detectAll(),
   // on-device speech models
   'speech:status': () => stt.engine.models().all(),
   'speech:download': ({ model }) => { stt.engine.models().ensure(model).catch(() => {}); return stt.engine.models().all(); }, // outcome arrives as events

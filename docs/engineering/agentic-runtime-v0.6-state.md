@@ -35,6 +35,20 @@ See the end of this file.
   researchers.
 - Tests: `test/actions.test.js` 8/8; `test/e2e-free.js` "local actions" check (real commands through the app).
 
+### Milestone 2 (done, committed): P1 coding-agent adapters, P2 MCP hand-over
+
+- `src/main/agents/index.js`: registry and adapters. Kiro (ACP), Claude Code (`claude -p … --output-format json
+  --permission-mode acceptEdits`), Codex (`codex exec -s workspace-write -C <dir> --skip-git-repo-check -o <file>`),
+  Jules (cloud, `jules new --repo`), Antigravity (user-supplied command with `{prompt}`; nothing assumed).
+- Crew coders use the agent chosen in Settings → Coding agent. One-shot CLI agents cannot ask before acting, so they
+  run only inside an isolated Git worktree (merge still needs approval); in a folder without Git they are refused.
+- Jules is offered to the model only when a repository is set, and each hand-off shows an approval card.
+- MCP (P2): no second registry. The servers already configured in MemoBrOS are handed to Kiro (ACP session) and to
+  Claude Code (`--mcp-config`, a private temporary file). Codex is not given them (its config format was not verified).
+- Tests: `test/agents.test.js` 6/6 against stand-ins that reject any flag the real tool does not have;
+  `test/e2e-free.js` "coding agents" check through the app.
+- Not verified: a real authenticated run of Claude Code, Codex, Kiro, Jules or agy.
+
 ### Next executable action
 
-P1: `src/main/agents/` adapters (Claude Code, Codex, Kiro ACP, Jules, AGY) and wiring into crew coders.
+P3: `src/main/remote/` worker prototype and client, then P4 Windows notes and a manually triggered CI workflow.

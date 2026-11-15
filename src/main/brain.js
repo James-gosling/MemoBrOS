@@ -270,7 +270,7 @@ function firstJson(text) {
 
 async function planCrew({ goal, kinds, project, signal }) {
   const kindHelp = {
-    coder: `"coder": a coding agent (Kiro CLI) working in the project folder${project ? ` ${project}` : ''}. It reads and writes code, runs commands and tests, and uses git.`,
+    coder: `"coder": a coding agent working in the project folder${project ? ` ${project}` : ''}. It reads and writes code in its own copy of the project.`,
     researcher: '"researcher": a background worker with a private web browser signed in to the user\'s connected accounts and their connected tools (Notion, GitHub, Google Workspace, databases…). It looks things up and does web tasks; it cannot edit local code.',
   };
   const res = await call({

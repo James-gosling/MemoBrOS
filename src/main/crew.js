@@ -16,16 +16,22 @@ const mcp = require('./mcp');
 const routines = require('./routines');
 const wt = require('./worktrees');
 const { AcpAgent } = require('./acp');
+const agents = require('./agents');
 
 const MIN = 2, MAX = 4;
 const stopped = () => Object.assign(new Error('Stopped.'), { aborted: true });
 let browserQueue = Promise.resolve(); // researchers share one background browser, so they take turns
 let coderQueue = Promise.resolve();   // without worktrees, coders take turns in the project folder
 
+// Which coding agent does the coding, and how it is started. See agents/index.js for the supported ones.
 function codeAgent() {
   const c = store.getSettings().codeAgent || {};
+  const id = agents.AGENTS[c.agent] && agents.AGENTS[c.agent].kind !== 'cloud' ? c.agent : c.agent === 'custom' ? 'custom' : 'kiro';
+  const def = agents.AGENTS[id] || { name: 'Custom ACP agent', kind: 'acp' };
+  const command = def.kind === 'acp' ? String(c.command || def.acpCommand || '').trim() : '';
   return {
-    enabled: c.enabled !== false && !!String(c.command || '').trim(), command: String(c.command || '').trim(), cwd: String(c.cwd || '').trim(),
+    agent: id, name: def.name, kind: def.kind, command, agyCommand: String(c.agyCommand || '').trim(), julesRepo: String(c.julesRepo || '').trim(),
+    enabled: c.enabled !== false && (def.kind === 'cli' || !!command), cwd: String(c.cwd || '').trim(),
     validate: String(c.validate || '').trim(), protected: Array.isArray(c.protected) ? c.protected : [],
   };
 }
@@ -53,11 +59,19 @@ function normalize(plan, kinds) {
   return agents.map((a, i) => ({ ...a, id: i, status: 'waiting', note: '', result: '', branch: '', integration: '' }));
 }
 
-// One ACP session of the coding agent in `cwd`. The directory is locked for the duration: a second writer is refused.
+// One coding session in `cwd`. The directory is locked for the duration: a second writer is refused.
 async function runCoder(agent, ctx, cwd) {
+  const cfg = codeAgent();
+  if (cfg.kind === 'cli') {
+    // These agents edit files without asking, so their work must land on a branch the user approves before merging.
+    if (!ctx.isolated) throw new Error(`${cfg.name} edits files without asking first, so MemoBrOS only runs it in a Git project, where its changes stay on a separate branch until you approve them. Use Kiro CLI for folders without Git.`);
+    const release = wt.acquire(cwd, agent.name);
+    try { return await agents.runCli(cfg.agent, ctx.brief(agent), { cwd, signal: ctx.signal, template: cfg.agyCommand, mcpServers: sharedMcpServers(), onUpdate: (line) => ctx.note(agent, line) }); }
+    finally { release(); }
+  }
   const release = wt.acquire(cwd, agent.name);
   const acp = new AcpAgent({
-    command: codeAgent().command, cwd,
+    command: cfg.command, cwd,
     onUpdate: (line) => ctx.note(agent, line),
     onPermission: async ({ title, detail, options }) => {
       const answer = await ctx.confirm(`${agent.name} wants to: ${title}`, detail || `In ${cwd}`, options.some((o) => o.kind === 'allow_always') ? { always: 'Always allow' } : {});
@@ -162,7 +176,7 @@ async function run({ goal, signal, io }) {
   }
   const memory = store.getMemory();
   const ctx = {
-    signal, confirm: io.confirm,
+    signal, confirm: io.confirm, isolated: iso.ok,
     note: (agent, line) => { agent.note = String(line).slice(0, 140); io.update(agents); },
     brief: (agent) => [
       `You are "${agent.name}", one of ${agents.length} agents working on this goal for the user:\n${goal}`,

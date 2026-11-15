@@ -7,6 +7,7 @@ const path = require('path');
 const assert = require('assert');
 const { _electron } = require('playwright');
 const fake = require('./fakeLLM');
+const fakeAgents = require('./fakeAgents');
 const { text, use } = fake;
 
 const root = path.join(__dirname, '..');
@@ -91,12 +92,13 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
   const script = (file, body) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `#!/bin/sh\n${body}\n`); fs.chmodSync(file, 0o755); };
   script(path.join(bin, 'kiro-cli'), `exec node "${path.join(__dirname, 'fixtures', 'fake-acp-agent.js')}" "$@"`);
   script(path.join(bin, 'kirocrew'), `echo "$@" > "${gatewayLog}.argv"\ncat > "${gatewayLog}.stdin"\nexec sleep 300`);
+  const agentBin = fakeAgents(['claude', 'codex', 'jules']); // stand-ins that enforce the real tools' flags
   const acpLog = () => (fs.existsSync(acpLogFile) ? fs.readFileSync(acpLogFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   const git = (cwd, ...a) => require('child_process').execFileSync('git', a, { cwd, encoding: 'utf8' }).trim();
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ permissions: { screen: true, microphone: true, control: true }, codeAgent: { cwd: project }, providers: { openrouter: { baseUrl: `${api.url}/api/v1` } }, sharedFolders: [shared], speak: false }));
   const app = await _electron.launch({
     executablePath: process.env.MEMOBROS_BIN || require('electron'), args: [...(process.env.MEMOBROS_BIN ? [] : [root]), '--no-sandbox'],
-    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, ACP_LOG: acpLogFile, OPENROUTER_API_KEY: 'or-test-key', ANTHROPIC_API_KEY: '', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1' },
+    env: { ...process.env, PATH: `${bin}${path.delimiter}${agentBin.dir}${path.delimiter}${process.env.PATH}`, ACP_LOG: acpLogFile, OPENROUTER_API_KEY: 'or-test-key', ANTHROPIC_API_KEY: '', MEMOBROS_USER_DATA: userData, MEMOBROS_TEST: '1' },
   });
   const results = [];
   const check = async (name, fn) => {
@@ -543,6 +545,72 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       const log = audit();
       assert.deepEqual(log.map((e) => e.decision), ['approved by user', 'denied by policy', 'denied by policy', 'declined by user', 'approved by user', 'allowed by rule', 'approved by user', 'approved by user'], 'every decision is in the audit trail');
       assert.ok(log.every((e) => e.at && e.who === 'Memo' && e.command));
+    });
+
+    await check('coding agents: Claude Code and Codex work as crew coders in isolated worktrees; Jules needs approval for every hand-off', async () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-agents-'));
+      git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.name', 'Tester'); git(repo, 'config', 'user.email', 't@example.com');
+      fs.writeFileSync(path.join(repo, 'readme.md'), 'readme\n'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'first');
+      await panel.click('#tabs [data-tab="settings"]');
+      await until(async () => (await panel.locator('#agent-status').innerText()).includes('Not found on this computer') || (await panel.locator('#agent-status').innerText()).includes('Installed'), 'agent detection shown');
+      await panel.selectOption('#set-code-agent', 'claude');
+      await until(async () => (await panel.locator('#agent-status').innerText()).includes('Installed: 2.1.325 (Claude Code)'), 'Claude Code detected with its version');
+      let st = await invoke('settings:save', { settings: { codeAgent: { agent: 'claude', cwd: repo } } });
+      assert.deepEqual([st.codeAgent.agent, st.codeAgent.name, st.codeAgent.kind], ['claude', 'Claude Code', 'cli']);
+      const before = agentBin.calls().length;
+      api.state.script = [
+        () => [text(JSON.stringify({ agents: [{ name: 'Api', kind: 'coder', phase: 1, task: 'PUT src/api.js api by claude' }, { name: 'Docs', kind: 'coder', phase: 1, task: 'PUT docs/guide.md guide by claude' }] }))],
+        () => [text('Both parts are done.')],
+      ];
+      await send('crew', 'build api and docs with claude');
+      await until(async () => (await confirmTitle()) === "Merge the crew's work into main?", 'merge approval', 40000);
+      assert.ok(!fs.existsSync(path.join(repo, 'src')), 'nothing reached the project before approval');
+      const calls = agentBin.calls().slice(before).filter((c) => c.tool === 'claude' && c.prompt);
+      assert.equal(calls.length, 2);
+      assert.ok(calls.every((c) => JSON.stringify(c.argv.slice(0, 6)) === JSON.stringify(['-p', '<prompt>', '--output-format', 'json', '--permission-mode', 'acceptEdits'])), 'started with the documented headless flags');
+      assert.equal(new Set(calls.map((c) => c.cwd)).size, 2, 'each coder ran in its own worktree'); assert.ok(calls.every((c) => !c.cwd.startsWith(repo)));
+      assert.ok(calls[0].mcp && Object.keys(calls[0].mcp.mcpServers).includes('Sales DB'), 'connected MCP servers were handed to Claude Code');
+      await panel.click('#confirm-yes');
+      await until(async () => (await lastMemo()).includes('Both parts are done'), 'report', 30000);
+      assert.equal(fs.readFileSync(path.join(repo, 'src', 'api.js'), 'utf8'), 'api by claude\n'); assert.equal(fs.readFileSync(path.join(repo, 'docs', 'guide.md'), 'utf8'), 'guide by claude\n');
+      assert.match(api.state.requests.at(-1).body.messages.at(-1).content, /## Api \(coder\) — done\nClaude Code report: put src\/api\.js/);
+      // Codex, same isolation; then a folder without Git, where an agent that cannot ask is not allowed to write
+      await invoke('settings:save', { settings: { codeAgent: { agent: 'codex' } } });
+      api.state.script = [() => [text(JSON.stringify({ agents: [{ name: 'Cli', kind: 'coder', phase: 1, task: 'PUT bin/cli.js cli by codex' }] }))], () => [text('Codex part done.')]];
+      await send('crew', 'add the cli with codex');
+      await until(async () => (await confirmTitle()) === "Merge the crew's work into main?", 'merge approval', 40000);
+      const cx = agentBin.calls().filter((c) => c.tool === 'codex' && c.prompt).at(-1);
+      assert.deepEqual(cx.argv.slice(0, 3), ['exec', '-s', 'workspace-write']); assert.equal(cx.argv[3], '-C'); assert.ok(!cx.dir.startsWith(repo));
+      await panel.click('#confirm-yes');
+      await until(async () => (await lastMemo()).includes('Codex part done'), 'report', 30000);
+      assert.equal(fs.readFileSync(path.join(repo, 'bin', 'cli.js'), 'utf8'), 'cli by codex\n');
+      await invoke('settings:save', { settings: { codeAgent: { cwd: project } } });
+      const n = agentBin.calls().length;
+      api.state.script = [() => [text(JSON.stringify({ agents: [{ name: 'Solo', kind: 'coder', phase: 1, task: 'PUT x.txt x' }, { name: 'Two', kind: 'coder', phase: 1, task: 'PUT y.txt y' }] }))], () => [text('It could not run there.')]];
+      await send('crew', 'try without git');
+      await until(async () => (await lastMemo()).includes('could not run there'), 'report', 30000);
+      assert.equal(agentBin.calls().length, n, 'the agent was never started in a folder without Git');
+      assert.match(api.state.requests.at(-1).body.messages.at(-1).content, /Codex edits files without asking first, so MemoBrOS only runs it in a Git project/);
+      assert.ok(!fs.existsSync(path.join(project, 'x.txt')));
+      // Jules: off until a repository is set; then every hand-off is approved by the user
+      api.state.script = [() => [text('ok')]];
+      await send('ask', 'hello');
+      await until(async () => (await lastMemo()) === 'ok', 'reply');
+      assert.ok(!api.state.requests.at(-1).body.tools.some((t) => t.function.name === 'send_to_jules'), 'Jules is not offered while it is off');
+      await invoke('settings:save', { settings: { codeAgent: { agent: 'kiro', julesRepo: 'owner/project' } } });
+      api.state.script = [() => [use('send_to_jules', { task: 'write unit tests for the parser' })], () => [text('Not sent.')]];
+      await send('ask', 'ask jules to write tests');
+      await until(async () => (await confirmTitle()) === 'Send this task to Google Jules?', 'approval for the cloud hand-off');
+      assert.match(await panel.locator('#confirm-text').innerText(), /Repository: owner\/project[\s\S]*leaves your computer/);
+      await panel.click('#confirm-no');
+      await until(async () => (await lastMemo()).includes('Not sent'), 'reply');
+      assert.ok(!agentBin.calls().some((c) => c.tool === 'jules' && c.prompt), 'nothing was sent without approval');
+      api.state.script = [() => [use('send_to_jules', { task: 'write unit tests for the parser' })], () => [text('Jules has it.')]];
+      await send('ask', 'yes, send it to jules');
+      await until(async () => (await confirmTitle()) === 'Send this task to Google Jules?', 'approval'); await panel.click('#confirm-yes');
+      await until(async () => (await lastMemo()).includes('Jules has it'), 'reply');
+      assert.deepEqual(agentBin.calls().filter((c) => c.tool === 'jules').at(-1).argv, ['new', '--repo', 'owner/project', '<prompt>']);
+      await invoke('settings:save', { settings: { codeAgent: { julesRepo: '', cwd: project } } });
     });
 
     let expenseId;

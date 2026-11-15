@@ -181,7 +181,11 @@
       <label class="check"><input type="checkbox" id="set-confirm-each">Ask before every single action (not only the plan)</label>
       <h3>Coding agent (ACP)</h3>
       <p class="muted small">Crew mode drives this agent over the Agent Client Protocol. Kiro CLI by default; any ACP agent command works.</p>
-      <label>Command<input id="set-code-cmd" placeholder="kiro-cli acp"></label>
+      <label>Agent<select id="set-code-agent"><option value="kiro">Kiro CLI (ACP; asks before each action)</option><option value="claude">Claude Code (headless; Git projects only)</option><option value="codex">Codex (sandboxed to its worktree; Git projects only)</option><option value="agy">Antigravity agy (your own command; Git projects only)</option><option value="custom">Another ACP agent (enter its command)</option></select></label>
+      <div id="agent-status" class="muted small"></div>
+      <label id="code-cmd-row">ACP command<input id="set-code-cmd" placeholder="kiro-cli acp"></label>
+      <label id="agy-cmd-row">Antigravity command (must contain {prompt})<input id="set-agy-cmd" placeholder='agy … "{prompt}"'></label>
+      <label>Google Jules repository (cloud agent; leave empty to keep it off)<input id="set-jules-repo" placeholder="owner/repository"></label>
       <label>Project folder<input id="set-code-cwd" placeholder="/home/you/projects/app"></label>
       <div class="row" style="margin-top:6px"><button type="button" id="code-browse">Browse…</button></div>
       <label>Check command (optional, run in each agent's worktree and on the combined result)<input id="set-code-validate" placeholder="npm test"></label>
