@@ -36,7 +36,7 @@ const DEFAULTS = {
   // Capabilities are off until the user allows each one, the first time it is needed.
   permissions: { screen: false, microphone: false, control: false, commands: false },
   // Running commands: kinds the user always allows ("git status"), extra folders besides the project, time limit.
-  actions: { allow: [], roots: [], timeoutSec: 120 },
+  actions: { allow: [], roots: [], timeoutSec: 120, workers: [] }, // workers: [{ id, name, url }] remote machines; secrets are stored separately
   // Wake word: local detection, off until switched on. `aliases` adds extra spellings a recogniser may produce.
   wake: { enabled: false, word: 'ARVI', aliases: '', debug: false },
   micDeviceId: '', // which microphone to use; empty means the system default

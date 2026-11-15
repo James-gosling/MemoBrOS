@@ -165,7 +165,7 @@ async function x11Part() {
   });
 
   await check('permissions: nothing is captured, heard or controlled until each capability is allowed', async () => {
-    assert.deepEqual((await state()).settings.permissions, { screen: false, microphone: false, control: false }, 'everything starts off');
+    assert.deepEqual((await state()).settings.permissions, { screen: false, microphone: false, control: false, commands: false }, 'everything starts off');
     api.state.requests.length = 0;
     await send('ask', 'what is on my screen?');
     await until(async () => (await confirmTitle()) === 'Let MemoBrOS look at your screen?', 'screen consent card');

@@ -567,7 +567,7 @@ function renderSettings() {
   $('set-code-agent').value = S.codeAgent.agent; $('set-agy-cmd').value = s.codeAgent.agyCommand || ''; $('set-jules-repo').value = s.codeAgent.julesRepo || '';
   renderAgent();
   $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-code-validate').value = s.codeAgent.validate || ''; $('set-code-protected').value = (s.codeAgent.protected || []).join(', ');
-  $('set-gateway-cmd').value = s.crewGateway.command; renderGateway();
+  $('set-gateway-cmd').value = s.crewGateway.command; renderGateway(); renderWorkers();
   $('set-autostart').checked = !!s.launchAtLogin;
   $('set-speak').checked = s.speak; $('set-polish').checked = s.dictationPolish; $('set-confirm-each').checked = s.confirmEachAction;
   fillVoices();
@@ -590,6 +590,17 @@ async function renderAgent() {
   $('agent-status').textContent = `${id === 'custom' ? 'Uses the command below.' : d?.installed ? `Installed: ${d.version}.` : 'Not found on this computer. Install it and sign in first.'}${id === 'agy' ? ' Its command-line interface could not be checked; enter the command from its own documentation.' : ''} Jules CLI: ${jules?.installed ? 'installed' : 'not installed'}.`;
 }
 $('set-code-agent').addEventListener('change', renderAgent);
+function renderWorkers() {
+  $('worker-list').replaceChildren(...(S.settings.actions.workers || []).map((w) => h('div', { className: 'item' },
+    h('div', { className: 'grow' }, h('b', { textContent: w.name }), h('span', { className: 'meta', textContent: w.url })),
+    h('div', { className: 'btns' },
+      h('button', { type: 'button', textContent: 'Test', onclick: async () => { $('worker-note').textContent = 'Testing…'; $('worker-note').textContent = await call('worker:test', { id: w.id }); } }),
+      h('button', { type: 'button', className: 'danger', textContent: 'Remove', onclick: async () => { S = await call('worker:delete', { id: w.id }); renderWorkers(); } })))));
+}
+$('worker-add').addEventListener('click', async () => {
+  try { S = await call('worker:save', { name: $('worker-name').value, url: $('worker-url').value, secret: $('worker-secret').value }); for (const id of ['worker-name', 'worker-url', 'worker-secret']) $(id).value = ''; $('worker-note').textContent = ''; renderWorkers(); }
+  catch (e) { $('worker-note').textContent = clean(e); }
+});
 function renderGateway() {
   const g = S.gateway;
   $('gateway-toggle').textContent = g.state === 'running' ? 'Stop gateway' : 'Start gateway';

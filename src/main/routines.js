@@ -132,7 +132,7 @@ function guardedExec(routine, signal) {
         return web.upload(i.id, file);
       }
       case 'request_approval': return (await ask(`${who} needs your OK`, String(i.question))) ? 'The user approved. Go ahead.' : DECLINED;
-      case 'run_command': return deps.runCommand({ command: i.command, cwd: i.cwd, why: i.why, who, signal, confirmOpts: { timeoutMs: APPROVAL_WAIT, notify: true } });
+      case 'run_command': return deps.runCommand({ command: i.command, cwd: i.cwd, why: i.why, worker: i.worker, who, signal, confirmOpts: { timeoutMs: APPROVAL_WAIT, notify: true } });
       case 'remember': store.addMemory(i.note); deps.changed?.(); return 'Saved.';
       default:
         if (name.startsWith('mcp__')) return mcpWithApproval(name, i, who);

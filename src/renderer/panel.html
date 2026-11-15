@@ -191,6 +191,12 @@
       <label>Check command (optional, run in each agent's worktree and on the combined result)<input id="set-code-validate" placeholder="npm test"></label>
       <label>Protected files (comma separated; agents' changes to these are never auto-merged)<input id="set-code-protected"></label>
       <p class="muted small">In a Git project every coder works in its own worktree and branch. Branches are checked, test-merged to find conflicts, and merged into your branch only after you approve. Without Git, coders run one at a time.</p>
+      <h3>Remote workers (prototype)</h3>
+      <p class="muted small">Another machine can run approved commands for you. Start <code>node src/main/remote/worker.js --root &lt;folder&gt;</code> there, reach it through an SSH tunnel, and enter its address and secret. The worker enforces the same command rules itself; approvals still happen here.</p>
+      <div id="worker-list"></div>
+      <div class="row"><input id="worker-name" placeholder="Name" class="grow"><input id="worker-url" placeholder="http://127.0.0.1:8377" class="grow"></div>
+      <div class="row" style="margin-top:6px"><input id="worker-secret" type="password" autocomplete="off" placeholder="Secret" class="grow"><button type="button" id="worker-add">Add</button></div>
+      <div id="worker-note" class="muted small"></div>
       <h3>Kiro Crew gateway (optional)</h3>
       <p class="muted small">Kiro Crew is a separate orchestration gateway that drives its own agents. MemoBrOS can start and stop it for you; it does not send it tasks, and crew mode keeps driving Kiro CLI directly.</p>
       <label>Start command<input id="set-gateway-cmd" placeholder="kirocrew gateway"></label>

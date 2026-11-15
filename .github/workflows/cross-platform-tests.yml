@@ -1,0 +1,39 @@
+# Runs the platform-independent test suites on Windows and Linux, and builds the Windows installer.
+# It only runs when started by hand (Actions → Cross-platform tests → Run workflow); nothing runs on push.
+name: Cross-platform tests
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node test/actions.test.js
+      - run: node test/remote.test.js
+      - run: node test/speech-models.test.js
+      - run: node test/voice.test.js
+      - run: node test/worktrees.test.js
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memobros-windows-installer
+          path: dist/*.exe
+          if-no-files-found: error

@@ -547,6 +547,35 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       assert.ok(log.every((e) => e.at && e.who === 'Memo' && e.command));
     });
 
+    await check('remote worker: a command is approved here and runs there; the worker\'s own rules still apply', async () => {
+      const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-worker-'));
+      const w = await require('../src/main/remote/worker').start({ root: remoteRoot, port: 0, allow: [], name: 'build-box' });
+      try {
+        let st = await invoke('worker:save', { name: 'Build box', url: w.url, secret: w.secret });
+        const id = st.settings.actions.workers[0].id;
+        assert.ok(!fs.readFileSync(path.join(userData, 'settings.json'), 'utf8').includes(w.secret), 'the worker secret is not kept in settings.json');
+        assert.equal(await invoke('worker:test', { id }), 'Connected to "build-box". The secret is accepted.');
+        api.state.script = [() => [use('run_command', { command: 'node -e "require(\'fs\').writeFileSync(\'built.txt\', \'remote\'); console.log(\'done there\')"', worker: 'Build box', why: 'build on the server' })], () => [text('Built on the build box.')]];
+        await send('ask', 'build it on the build box');
+        await until(async () => (await confirmTitle()) === 'Memo wants to run a command on Build box', 'approval names the worker');
+        assert.match(await panel.locator('#confirm-text').innerText(), /On the worker "Build box"/);
+        assert.ok(!fs.existsSync(path.join(remoteRoot, 'built.txt')), 'nothing ran on the worker before approval');
+        await panel.click('#confirm-yes');
+        await until(async () => (await lastMemo()).includes('Built on the build box'), 'answer');
+        assert.equal(fs.readFileSync(path.join(remoteRoot, 'built.txt'), 'utf8'), 'remote'); assert.ok(!fs.existsSync(path.join(project, 'built.txt')), 'it ran there, not here');
+        assert.match(api.state.requests.at(-1).body.messages.filter((m) => m.role === 'tool').at(-1).content, /^exit code 0[\s\S]*done there/);
+        api.state.script = [() => [use('run_command', { command: 'sudo reboot', worker: 'Build box' })], () => [use('run_command', { command: 'ls', worker: 'nowhere' })], () => [text('Neither ran.')]];
+        await send('ask', 'reboot the build box');
+        await until(async () => (await lastMemo()).includes('Neither ran'), 'answer');
+        const results = api.state.requests.at(-1).body.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+        assert.match(results.at(-2), /never run because it would shut down or restart|never run because it asks for administrator rights/); assert.match(results.at(-1), /no remote worker called "nowhere"\. Configured workers: Build box/);
+        await invoke('worker:save', { name: 'Bad secret', url: w.url, secret: 'wrong' });
+        const bad = (await invoke('state:get')).settings.actions.workers.find((x) => x.name === 'Bad secret');
+        assert.match(await invoke('worker:test', { id: bad.id }), /rejected the secret \(bad signature\)/);
+        st = await invoke('worker:delete', { id: bad.id }); await invoke('worker:delete', { id });
+      } finally { w.close(); }
+    });
+
     await check('coding agents: Claude Code and Codex work as crew coders in isolated worktrees; Jules needs approval for every hand-off', async () => {
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-agents-'));
       git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.name', 'Tester'); git(repo, 'config', 'user.email', 't@example.com');

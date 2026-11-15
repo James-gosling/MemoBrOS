@@ -49,6 +49,32 @@ See the end of this file.
   `test/e2e-free.js` "coding agents" check through the app.
 - Not verified: a real authenticated run of Claude Code, Codex, Kiro, Jules or agy.
 
+### Milestone 3 (done, committed): P3 remote worker prototype, P4 Windows groundwork, documentation
+
+- `src/main/remote/`: `protocol.js` (HMAC-signed, timestamped, single-use requests), `worker.js` (standalone Node
+  worker applying the same command policy with its own folder and allow list), `client.js`. `run_command` accepts a
+  `worker` name; approval happens on the control plane; the worker refuses never-run commands regardless.
+- Settings → Remote workers (add, test, remove); worker secrets are stored with the other secrets.
+- Windows: executor and policy have Windows branches (untested); `.github/workflows/cross-platform-tests.yml`
+  runs the platform-independent suites on Windows and Linux and builds the installer, **manual trigger only, never
+  run so far**; `docs/windows.md` lists what is written and what is missing.
+- User documentation: `docs/agentic-runtime.md`. Version 0.6.0.
+
+### Test results at this point
+
+worktrees 8/8 · voice 7/7 · speech-models 11/11 · pointer 4/4 · actions 8/8 · agents 6/6 · remote 5/5 ·
+e2e 9/9 · e2e-free 16/16 · e2e-desktop 13/13 · speech-real 4/4 when its fixtures are present.
+
+### Still open
+
+1. Sections 1-19 of the master prompt were never received; compare this work against them when available.
+2. Real signed-in runs of Claude Code, Codex, Kiro, Jules; the agy interface is unknown.
+3. Run the Cross-platform tests workflow once and fix what Windows shows.
+4. Remote worker: output streaming, TLS, running coding agents on workers, a second physical machine.
+5. Codex is not given MemoBrOS's MCP servers (its configuration format was not verified).
+
 ### Next executable action
 
-P3: `src/main/remote/` worker prototype and client, then P4 Windows notes and a manually triggered CI workflow.
+On the laptop: `git pull && npm install`, allow "Run commands" in Settings → Permissions, ask "what is the state
+of my project?" and check the approval card and the reported output. Then pick an installed coding agent in
+Settings → Coding agent and run a small crew task in a Git project.

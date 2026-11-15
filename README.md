@@ -13,6 +13,13 @@ permissions for screen, microphone and mouse/keyboard that are off until you all
 the permissions manual, what Wayland allows and what has been tested are in
 [docs/desktop-assistant.md](docs/desktop-assistant.md).
 
+## Agentic runtime
+
+Memo can run commands in your project folder (each one approved by you, dangerous ones never), hand coding work
+to Kiro CLI, Claude Code, Codex, Jules or Antigravity through each tool's own interface, and run approved
+commands on a remote worker. Rules, agents and what has been verified are in
+[docs/agentic-runtime.md](docs/agentic-runtime.md); Windows status is in [docs/windows.md](docs/windows.md).
+
 ## Architecture
 
 ```
@@ -144,6 +151,9 @@ src/main/llm.js       model providers: OpenRouter / OmniRoute (OpenAI chat forma
 src/main/routines.js  scheduler, routine storage, and the guardrails around background tool use
 src/main/cron.js      schedule matching (the model writes the schedule; users only see plain words)
 src/main/webagent.js  hidden background browser with persistent sign-ins, page reading, form filling, file upload
+src/main/actions/      command policy, executor and audit trail (run_command)
+src/main/agents/       coding-agent adapters: Kiro, Claude Code, Codex, Jules, Antigravity
+src/main/remote/       remote worker prototype: signed protocol, worker, client
 src/main/acp.js       ACP client: starts and drives the coding agent (Kiro CLI) over stdio
 src/main/crew.js      crew mode: orchestrator, 2–4 subagents, per-coder isolation and approval-gated integration
 src/main/worktrees.js Git worktrees, directory locks, validation, conflict detection, fast-forward merge

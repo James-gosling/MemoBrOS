@@ -319,7 +319,7 @@ function doAsk(text) {
         startAgent: (t) => { next = () => doAgent(t, true); },
         startCrew: (goal) => { next = () => doCrew(goal, true); },
         openApp: (name) => `Opened ${apps.open(name)}.`,
-        runCommand: (i) => actions.runCommand({ command: i.command, cwd: i.cwd, why: i.why, signal }),
+        runCommand: (i) => actions.runCommand({ command: i.command, cwd: i.cwd, why: i.why, worker: i.worker, signal }),
         createRoutine: (draft) => describeRoutine(routines.add(draft)),
         runBackground: (t) => {
           setImmediate(() => routines.runOnce(t).catch((e) => toPanel({ type: 'message', role: 'error', text: e.message })));
@@ -756,6 +756,26 @@ const handlers = {
     return { ...st, message: 'Removed.' };
   },
   'agents:detect': () => agents.detectAll(),
+  // remote workers (prototype): machines that run approved commands for this MemoBrOS
+  'worker:save': ({ name, url, secret }) => {
+    new URL(url); // throws on a malformed address
+    const list = store.getSettings().actions.workers || [];
+    const id = `w${Date.now().toString(36)}`;
+    store.saveSettings({ actions: { workers: [...list.filter((w) => w.name !== name), { id, name: String(name).trim().slice(0, 40), url: String(url).trim() }] } });
+    store.setSecret(`worker:${id}`, String(secret || '').trim());
+    return state();
+  },
+  'worker:delete': ({ id }) => { store.saveSettings({ actions: { workers: (store.getSettings().actions.workers || []).filter((w) => w.id !== id) } }); store.setSecret(`worker:${id}`, ''); return state(); },
+  'worker:test': async ({ id }) => {
+    const w = actions.worker(id);
+    if (!w) return 'No such worker.';
+    try {
+      const h = await require('./remote/client').health(w);
+      // An empty command is refused by policy (403) only after the signature has been accepted.
+      const probe = await require('./remote/client').call(w, 'POST', '/v1/run', { command: '' });
+      return probe.status === 401 ? `Reached "${h.worker}", but it rejected the secret (${probe.json.error}).` : `Connected to "${h.worker}". The secret is accepted.`;
+    } catch (e) { return e.message; }
+  },
   // on-device speech models
   'speech:status': () => stt.engine.models().all(),
   'speech:download': ({ model }) => { stt.engine.models().ensure(model).catch(() => {}); return stt.engine.models().all(); }, // outcome arrives as events

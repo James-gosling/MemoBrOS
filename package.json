@@ -1,7 +1,7 @@
 {
   "name": "memobros",
   "productName": "MemoBrOS",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "MemoBrOS \u2014 a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",
@@ -9,7 +9,7 @@
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && node test/pointer.test.js && node test/actions.test.js && node test/agents.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
+    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && node test/pointer.test.js && node test/actions.test.js && node test/agents.test.js && node test/remote.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "pack": "electron-builder --dir",
@@ -17,7 +17,8 @@
     "start:x11": "electron . --ozone-platform=x11",
     "install:desktop": "node scripts/install-desktop.js",
     "test:speech": "xvfb-run -a -s \"-screen 0 1280x800x24\" node test/speech-real.test.js",
-    "pointer:install": "node scripts/install-pointer-extension.js"
+    "pointer:install": "node scripts/install-pointer-extension.js",
+    "worker": "node src/main/remote/worker.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
