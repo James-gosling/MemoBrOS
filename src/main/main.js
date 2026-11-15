@@ -500,7 +500,7 @@ async function sendToJules(task, signal) {
   const ok = await confirm('Send this task to Google Jules?', `${task}\n\nRepository: ${repo}\nThis leaves your computer: the task goes to Google's Jules service, which works on that repository with your Jules account.`);
   if (!ok) return 'The user did not approve sending this to Jules.';
   toPanel({ type: 'message', role: 'action', text: `Jules: new session for ${repo}` });
-  return `Jules accepted the task. Its own output:\n${await agents.startCloud('jules', { prompt: task, repo, signal })}\nTell the user it runs in the cloud and that results are fetched later with "jules remote pull".`;
+  return `Jules accepted the task. Its own output:\n${await agents.startCloud('jules', { prompt: task, repo, signal, passEnv: store.getSettings().codeAgent.passEnv })}\nTell the user it runs in the cloud and that results are fetched later with "jules remote pull".`;
 }
 
 // ---- routines --------------------------------------------------------------------------

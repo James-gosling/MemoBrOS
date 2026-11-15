@@ -16,6 +16,7 @@ const DEFAULTS = {
     agent: 'kiro', // kiro | claude | codex | agy | custom (any other ACP command)
     command: 'kiro-cli acp', // the ACP command, for kiro and custom
     agyCommand: '', // Antigravity: the user's own command line containing {prompt}
+    passEnv: '', // names of extra environment variables an agent may see (credentials are otherwise withheld), e.g. "GH_TOKEN, NPM_TOKEN"
     julesRepo: '', // owner/repo for Google Jules (cloud); empty keeps Jules off
     validate: '', // optional check run in each agent's worktree and on the combined result, e.g. "npm test"
     protected: ['.env*', '*.pem', '*.key', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.github/workflows/**'], // agents' changes to these are never auto-integrated
