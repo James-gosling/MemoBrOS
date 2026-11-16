@@ -13,6 +13,7 @@ const read = (dir, file) => fs.readFileSync(path.join(dir, file), 'utf8');
 function makeRepo() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-repo-'));
   sh(repo, 'init', '-q', '-b', 'main'); sh(repo, 'config', 'user.name', 'Tester'); sh(repo, 'config', 'user.email', 't@example.com');
+  sh(repo, 'config', 'core.autocrlf', 'false'); // Git for Windows would otherwise rewrite line endings, and the tests compare file contents
   write(repo, 'shared.txt', 'original\n'); write(repo, 'keep.txt', 'keep\n');
   sh(repo, 'add', '-A'); sh(repo, 'commit', '-q', '-m', 'first commit');
   write(repo, 'second.txt', 'two\n'); sh(repo, 'add', '-A'); sh(repo, 'commit', '-q', '-m', 'second commit');
