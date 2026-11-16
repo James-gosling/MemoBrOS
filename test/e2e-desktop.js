@@ -473,7 +473,8 @@ async function waylandPart() {
       assert.ok(await panel.locator('#perm-control').isDisabled(), 'mouse/keyboard permission cannot be switched on where it cannot work');
       assert.match(await panel.locator('#perm-note-text').innerText(), /not available in native Wayland mode\. X11 mode brings both back/, 'and the reason is written right under it');
       assert.ok(await panel.locator('#display-switch').isVisible(), 'with a one-click switch to X11 mode');
-      await panel.screenshot({ path: path.join(out, 'desktop-wayland-settings.png') });
+      // A picture for the record, not a check: a headless compositor sometimes draws no frame, and then there is none.
+      await panel.screenshot({ path: path.join(out, 'desktop-wayland-settings.png'), timeout: 5000 }).catch(() => console.log('      (no screenshot: the headless compositor did not draw a frame)'));
       await tap('#tabs [data-tab="chat"]');
     });
 
