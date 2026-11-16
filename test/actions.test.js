@@ -143,10 +143,11 @@ test('Windows: tools installed as .cmd scripts are started without handing free 
 
 test('cancelling and timing out stop the command and everything it started', async () => {
   const marker = path.join(project, 'child-alive');
-  const script = `const { spawn } = require('child_process'); spawn(process.execPath, ['-e', 'setInterval(() => require("fs").writeFileSync(${JSON.stringify(marker)}, String(Date.now())), 100)'], { stdio: 'ignore' }); setInterval(() => {}, 1000);`;
+  // The path is written into a script inside a script: forward slashes survive that on Windows, backslashes do not.
+  const script = `const { spawn } = require('child_process'); spawn(process.execPath, ['-e', 'setInterval(() => require("fs").writeFileSync(${JSON.stringify(marker.replace(/\\/g, '/'))}, String(Date.now())), 100)'], { stdio: 'ignore' }); setInterval(() => {}, 1000);`;
   const abort = new AbortController();
   const pending = run({ argv: ['node', '-e', script], cwd: project, signal: abort.signal });
-  await new Promise((res) => setTimeout(res, 900));
+  for (let i = 0; i < 80 && !fs.existsSync(marker); i++) await new Promise((res) => setTimeout(res, 100)); // two Node starts can be slow
   assert.ok(fs.existsSync(marker), 'the grandchild is running');
   abort.abort();
   const r = await pending;
