@@ -564,11 +564,11 @@ function renderSettings() {
     hk.failed.length ? `Not registered: ${hk.failed.join(', ')}. ` : 'All shortcuts registered. ',
     hk.via === 'portal' ? 'On Wayland they go through the desktop\'s shortcuts portal, which asks you to approve them. ' : hk.via === 'x11' && S.session === 'wayland' ? 'Under XWayland they only fire while an X11 window has focus. ' : '',
     'To bind show/hide yourself: GNOME Settings → Keyboard → Custom Shortcuts, command: ', h('kbd', { textContent: hk.fallback }));
-  $('set-code-agent').value = S.codeAgent.agent; $('set-agy-cmd').value = s.codeAgent.agyCommand || ''; $('set-jules-repo').value = s.codeAgent.julesRepo || '';
+  $('set-code-agent').value = S.codeAgent.agent; $('set-agy-cmd').value = s.codeAgent.agyCommand || ''; $('set-jules-repo').value = s.codeAgent.julesRepo || ''; $('set-code-passenv').value = s.codeAgent.passEnv || '';
   renderAgent();
   $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-code-validate').value = s.codeAgent.validate || ''; $('set-code-protected').value = (s.codeAgent.protected || []).join(', ');
   $('set-gateway-cmd').value = s.crewGateway.command; renderGateway(); renderWorkers();
-  $('set-autostart').checked = !!s.launchAtLogin;
+  $('set-autostart').checked = !!s.launchAtLogin; $('set-autostart').disabled = !S.autostart.manages; $('set-autostart').parentElement.title = S.autostart.reason || '';
   $('set-speak').checked = s.speak; $('set-polish').checked = s.dictationPolish; $('set-confirm-each').checked = s.confirmEachAction;
   fillVoices();
   $('hotkeys').replaceChildren(...Object.entries(HOTKEY_LABELS).map(([k, label]) => h('div', { className: 'hk' }, label, h('input', { value: s.hotkeys[k], id: `hk-${k}` }))));
@@ -630,7 +630,7 @@ $('settings-form').addEventListener('submit', async (e) => {
       providers: { openrouter: { model: $('set-or-model').value.trim() || 'openrouter/free' }, omniroute: { baseUrl: $('set-omni-url').value.trim() || 'http://localhost:20128/v1', model: $('set-omni-model').value.trim() || 'auto' } },
       model: $('set-model').value, dictationModel: $('set-dict-model').value, sttProvider: $('set-stt').value,
       sttBaseUrl: $('set-stt-url').value.trim(), sttCloudModel: $('set-stt-model').value.trim(), language: $('set-lang').value,
-      codeAgent: { agent: $('set-code-agent').value, agyCommand: $('set-agy-cmd').value.trim(), julesRepo: $('set-jules-repo').value.trim(), command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), validate: $('set-code-validate').value.trim(), protected: $('set-code-protected').value.split(',').map((x) => x.trim()).filter(Boolean) },
+      codeAgent: { agent: $('set-code-agent').value, agyCommand: $('set-agy-cmd').value.trim(), julesRepo: $('set-jules-repo').value.trim(), passEnv: $('set-code-passenv').value.trim(), command: $('set-code-cmd').value.trim(), cwd: $('set-code-cwd').value.trim(), validate: $('set-code-validate').value.trim(), protected: $('set-code-protected').value.split(',').map((x) => x.trim()).filter(Boolean) },
       crewGateway: { command: $('set-gateway-cmd').value.trim() },
       launchAtLogin: $('set-autostart').checked, displayBackend: $('set-display').value,
       wake: { word: $('set-wake-word').value.trim() || 'ARVI', aliases: $('set-wake-aliases').value.trim(), debug: $('set-wake-debug').checked },
@@ -655,8 +655,27 @@ function renderAll() {
   renderChrome(); renderSettings(); renderSkills(); renderMemory(); renderRoutines(); renderMcp(); renderAttachments(S.attachments); renderWalk(S.walk); setMode(mode); renderEmpty();
 }
 
+// Output of a running command, shown as it arrives. Only the last part is kept on screen.
+const outputs = new Map();
+function addOutput({ id, label, text, done }) {
+  let box = outputs.get(id);
+  if (done) { if (box) box.classList.add('done'); outputs.delete(id); return; }
+  if (!text) return;
+  if (!box) {
+    $('messages').querySelector('.empty')?.remove();
+    box = h('pre', { className: 'msg output', title: label || '' });
+    outputs.set(id, box);
+    $('messages').append(box);
+  }
+  const all = box.textContent + text;
+  box.textContent = all.length > 6000 ? `…${all.slice(-6000)}` : all;
+  box.scrollTop = box.scrollHeight;
+  $('messages').scrollTop = $('messages').scrollHeight;
+}
+
 window.memo.on((e) => {
   if (e.type === 'message') addMessage(e);
+  else if (e.type === 'output') addOutput(e);
   else if (e.type === 'say') speak(e.text);
   else if (e.type === 'shutup') shutUp();
   else if (e.type === 'status') renderStatus(e);

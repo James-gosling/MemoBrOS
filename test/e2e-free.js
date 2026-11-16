@@ -5,7 +5,7 @@ const os = require('os');
 const http = require('http');
 const path = require('path');
 const assert = require('assert');
-const { _electron } = require('playwright');
+const { _electron } = require('./pw');
 const fake = require('./fakeLLM');
 const fakeAgents = require('./fakeAgents');
 const { text, use } = fake;
@@ -498,6 +498,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       await panel.click('#confirm-yes');
       await until(async () => (await lastMemo()).includes('printed 42'), 'answer');
       assert.match(toolResult(), /^exit code 3 in [\d.]+ s\nstdout:\n42\nstderr:\nwarn$/, 'the model receives the real exit code and output');
+      assert.match(await panel.locator('.msg.output').last().innerText(), /42[\s\S]*warn|warn[\s\S]*42/, 'the output is shown in the panel');
       // never run, and no card is even shown
       api.state.script = [() => [use('run_command', { command: 'sudo rm -rf /' })], () => [text('I cannot do that.')]];
       await send('ask', 'wipe it');
@@ -535,26 +536,43 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       await until(async () => (await lastMemo()).includes('Wrote it'), 'answer');
       assert.equal(fs.readFileSync(path.join(project, 'result.txt'), 'utf8').trim(), 'built');
       // Stop cancels a running command
-      api.state.script = [() => [use('run_command', { command: 'node -e "setInterval(() => {}, 1000)"' })], () => [text('unreachable')]];
+      api.state.script = [() => [use('run_command', { command: 'node -e "let n = 0; setInterval(() => console.log(\'tick \' + ++n), 150)"' })], () => [text('unreachable')]];
       await send('ask', 'run something long');
       await until(async () => (await confirmTitle()) === 'Memo wants to run a command', 'card'); await panel.click('#confirm-yes');
       await until(async () => (await panel.locator('.msg.action').last().innerText()).includes('setInterval'), 'command started');
-      await sleep(500);
+      await until(async () => /tick 2/.test(await panel.locator('.msg.output').last().innerText()), 'output appears while the command is still running');
+      assert.ok(!(await panel.locator('.msg.output').last().getAttribute('class')).includes('done'), 'and the command has not finished');
       await panel.click('#stop');
       await until(() => audit().at(-1).cancelled === true, 'the command was cancelled');
       const log = audit();
       assert.deepEqual(log.map((e) => e.decision), ['approved by user', 'denied by policy', 'denied by policy', 'declined by user', 'approved by user', 'allowed by rule', 'approved by user', 'approved by user'], 'every decision is in the audit trail');
       assert.ok(log.every((e) => e.at && e.who === 'Memo' && e.command));
+      await until(async () => (await panel.locator('.msg.output').last().getAttribute('class')).includes('done'), 'the output box is closed after the stop');
+    });
+
+    await check('the windows stay on their own pages and the main process only takes well-formed requests from them', async () => {
+      const refused = (channel, payload) => panel.evaluate(([c, p]) => window.memo.invoke(c, p).then(() => 'accepted', (e) => e.message), [channel, payload]);
+      assert.match(await refused('constructor'), /Unknown channel/); assert.match(await refused('no:such:thing'), /Unknown channel/);
+      assert.match(await refused('state:get', 'text'), /must carry an object/); assert.match(await refused('state:get', [1]), /must carry an object/);
+      assert.equal(await refused('state:get', {}), 'accepted');
+      const before = panel.url(), windowsBefore = app.windows().length;
+      // (asked of the main process: Playwright itself stalls on a navigation the app cancels)
+      const locked = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => /(panel|overlay)\.html$/.test(w.webContents.getURL())).map((w) => { let stopped = false; w.webContents.emit('will-navigate', { preventDefault() { stopped = true; } }, 'https://example.com/'); return stopped; }));
+      assert.ok(locked.length >= 1 && locked.every(Boolean), 'navigation away is cancelled in every MemoBrOS window');
+      const opened = await panel.evaluate(() => window.open('https://example.com/') === null);
+      await sleep(400);
+      assert.equal(panel.url(), before, 'the panel cannot be navigated away'); assert.equal(opened, true, 'and cannot open other windows');
+      assert.equal(app.windows().length, windowsBefore, 'no new window appeared');
     });
 
     await check('remote worker: a command is approved here and runs there; the worker\'s own rules still apply', async () => {
       const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-worker-'));
-      const w = await require('../src/main/remote/worker').start({ root: remoteRoot, port: 0, allow: [], name: 'build-box' });
+      const w = await require('../src/main/remote/worker').start({ root: remoteRoot, port: 0, allow: [] });
       try {
         let st = await invoke('worker:save', { name: 'Build box', url: w.url, secret: w.secret });
         const id = st.settings.actions.workers[0].id;
         assert.ok(!fs.readFileSync(path.join(userData, 'settings.json'), 'utf8').includes(w.secret), 'the worker secret is not kept in settings.json');
-        assert.equal(await invoke('worker:test', { id }), 'Connected to "build-box". The secret is accepted.');
+        assert.equal(await invoke('worker:test', { id }), 'Connected to "Build box". The secret is accepted.');
         api.state.script = [() => [use('run_command', { command: 'node -e "require(\'fs\').writeFileSync(\'built.txt\', \'remote\'); console.log(\'done there\')"', worker: 'Build box', why: 'build on the server' })], () => [text('Built on the build box.')]];
         await send('ask', 'build it on the build box');
         await until(async () => (await confirmTitle()) === 'Memo wants to run a command on Build box', 'approval names the worker');
@@ -596,7 +614,7 @@ const listen = (handler) => new Promise((resolve) => { const s = http.createServ
       assert.ok(!fs.existsSync(path.join(repo, 'src')), 'nothing reached the project before approval');
       const calls = agentBin.calls().slice(before).filter((c) => c.tool === 'claude' && c.prompt);
       assert.equal(calls.length, 2);
-      assert.ok(calls.every((c) => JSON.stringify(c.argv.slice(0, 6)) === JSON.stringify(['-p', '<prompt>', '--output-format', 'json', '--permission-mode', 'acceptEdits'])), 'started with the documented headless flags');
+      assert.ok(calls.every((c) => JSON.stringify(c.argv.slice(0, 7)) === JSON.stringify(['-p', '<prompt>', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits'])), 'started with the documented headless flags');
       assert.equal(new Set(calls.map((c) => c.cwd)).size, 2, 'each coder ran in its own worktree'); assert.ok(calls.every((c) => !c.cwd.startsWith(repo)));
       assert.ok(calls[0].mcp && Object.keys(calls[0].mcp.mcpServers).includes('Sales DB'), 'connected MCP servers were handed to Claude Code');
       await panel.click('#confirm-yes');

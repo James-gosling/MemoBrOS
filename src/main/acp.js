@@ -24,7 +24,7 @@ class AcpAgent {
     const [command, ...args] = splitCommand(this.opts.command || '');
     if (!command) throw new Error('No coding-agent command is set. Add one in Settings → Coding agent.');
     await new Promise((resolve, reject) => {
-      this.child = spawn(command, args, { cwd: this.opts.cwd, env: { ...process.env, ...(this.opts.env || {}) }, stdio: ['pipe', 'pipe', 'ignore'] });
+      this.child = spawn(command, args, { cwd: this.opts.cwd, env: this.opts.env || process.env, stdio: ['pipe', 'pipe', 'ignore'] });
       this.child.once('spawn', resolve);
       this.child.once('error', (e) => reject(new Error(e.code === 'ENOENT' ? `"${command}" is not installed or not on PATH.` : e.message)));
     });

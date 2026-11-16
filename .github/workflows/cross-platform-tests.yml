@@ -1,10 +1,17 @@
 # Runs the platform-independent test suites on Windows and Linux, and builds the Windows installer.
-# It only runs when started by hand (Actions → Cross-platform tests → Run workflow); nothing runs on push.
+# It runs for pull requests and when started by hand (Actions → Cross-platform tests → Run workflow).
+# It uses no secrets. "pull_request" (not "pull_request_target") runs the pull request's code with a read-only
+# token and, for pull requests from forks, without access to any repository secret.
 name: Cross-platform tests
 on:
   workflow_dispatch:
+  pull_request:
 permissions:
   contents: read
+# A newer push to the same pull request (or branch) replaces the run that is still going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   unit:
     strategy:
@@ -13,8 +20,8 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm ci
@@ -23,16 +30,32 @@ jobs:
       - run: node test/speech-models.test.js
       - run: node test/voice.test.js
       - run: node test/worktrees.test.js
+      - run: node test/autostart.test.js
+      # The stand-in agent programs are shell scripts on a Unix PATH; the Windows variant has never been run.
+      - if: runner.os == 'Linux'
+        run: node test/agents.test.js
+  # The app itself, driven through its real windows on a virtual display, with a scripted model (no accounts, no cost).
+  electron-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: npm ci
+      - run: xvfb-run -a -s "-screen 0 1280x800x24" node test/e2e.js
+      - run: xvfb-run -a -s "-screen 0 1280x800x24" node test/e2e-free.js
   windows-installer:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm ci
       - run: npm run dist:win
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: memobros-windows-installer
           path: dist/*.exe

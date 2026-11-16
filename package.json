@@ -1,15 +1,15 @@
 {
   "name": "memobros",
   "productName": "MemoBrOS",
-  "version": "0.6.0",
-  "description": "MemoBrOS \u2014 a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
+  "version": "0.6.1",
+  "description": "MemoBrOS — a screen-aware AI buddy that points, talks, dictates, guides and acts on your desktop.",
   "main": "src/main/main.js",
   "license": "MIT",
   "private": true,
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && node test/pointer.test.js && node test/actions.test.js && node test/agents.test.js && node test/remote.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
+    "test": "node test/worktrees.test.js && node test/voice.test.js && node test/speech-models.test.js && node test/pointer.test.js && node test/autostart.test.js && node test/actions.test.js && node test/agents.test.js && node test/remote.test.js && xvfb-run -a -s \"-screen 0 1280x800x24\" sh -c 'node test/e2e.js && node test/e2e-free.js && node test/e2e-desktop.js && node test/speech-real.test.js'",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
     "pack": "electron-builder --dir",
@@ -28,7 +28,8 @@
   },
   "devDependencies": {
     "electron": "^45.3.1",
-    "electron-builder": "^26.18.0"
+    "electron-builder": "^26.18.0",
+    "playwright-core": "1.63.0"
   },
   "author": "MemoBrOS",
   "homepage": "https://github.com/James-gosling/MemoBrOS",

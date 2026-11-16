@@ -25,6 +25,7 @@ const llm = require('./llm');
 const mcp = require('./mcp');
 const web = require('./webagent');
 const routines = require('./routines');
+const autostart = require('./autostart');
 const wake = require('./wake');
 const apps = require('./apps');
 const { ExtensionPointer } = require('./pointer');
@@ -68,6 +69,7 @@ function createOverlay() {
     hasShadow: false, alwaysOnTop: true, show: false, enableLargerThanScreen: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false },
   });
+  lockDown(overlay);
   overlay.setAlwaysOnTop(true, 'screen-saver');
   overlay.setIgnoreMouseEvents(true);
   overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -129,6 +131,7 @@ function createPanel() {
     minWidth: compact ? SIZE.compact.width : 340, minHeight: compact ? SIZE.compact.height : 420, backgroundColor: '#1b1915', icon: icon(64),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false },
   });
+  lockDown(panel);
   panel.setAlwaysOnTop(true, 'floating');
   panel.loadFile(path.join(__dirname, '..', 'renderer', 'panel.html'));
   // Closing the window only hides it: the assistant keeps running until "Quit" is chosen.
@@ -500,7 +503,7 @@ async function sendToJules(task, signal) {
   const ok = await confirm('Send this task to Google Jules?', `${task}\n\nRepository: ${repo}\nThis leaves your computer: the task goes to Google's Jules service, which works on that repository with your Jules account.`);
   if (!ok) return 'The user did not approve sending this to Jules.';
   toPanel({ type: 'message', role: 'action', text: `Jules: new session for ${repo}` });
-  return `Jules accepted the task. Its own output:\n${await agents.startCloud('jules', { prompt: task, repo, signal })}\nTell the user it runs in the cloud and that results are fetched later with "jules remote pull".`;
+  return `Jules accepted the task. Its own output:\n${await agents.startCloud('jules', { prompt: task, repo, signal, passEnv: store.getSettings().codeAgent.passEnv })}\nTell the user it runs in the cloud and that results are fetched later with "jules remote pull".`;
 }
 
 // ---- routines --------------------------------------------------------------------------
@@ -622,18 +625,11 @@ function route(text, mode) {
 }
 
 // ---- start with the system (so routines keep running) -----------------------------------------
-function applyAutostart() {
-  const on = !!store.getSettings().launchAtLogin;
+// Only when the user changes the setting, and never from a temporary profile: see autostart.js.
+function applyAutostart(was) {
   try {
-    if (process.platform === 'linux') {
-      const file = path.join(app.getPath('home'), '.config', 'autostart', 'memobros.desktop');
-      if (!on) { fs.rmSync(file, { force: true }); return; }
-      const exec = process.env.APPIMAGE || (app.isPackaged ? process.execPath : `${process.execPath}" "${app.getAppPath()}`);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=MemoBrOS\nComment=Screen-aware AI buddy\nExec="${exec}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
-    } else if (app.isPackaged || on === false) {
-      app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] });
-    }
+    const step = autostart.plan({ was, on: !!store.getSettings().launchAtLogin, home: app.getPath('home'), packaged: app.isPackaged, execPath: process.execPath, appPath: app.getAppPath() });
+    autostart.apply(step, (o) => app.setLoginItemSettings(o));
   } catch (e) { console.warn('autostart:', e.message); }
 }
 
@@ -643,6 +639,7 @@ function state() {
   return {
     display: env.display, session: env.session, caps, paused, wakeOn, activity, hotkeys: hotkeyReport, compact: !!(s.window || {}).compact,
     pointer: { backend: pointerBackend(), ...s.pointer },
+    autostart: (({ kind, manages, reason }) => ({ kind, manages, reason }))(autostart.profile()),
     speech: stt.engine.models().all(), speechModel: stt.engine.mainModel(),
     settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
     keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
@@ -655,14 +652,14 @@ function pushState() { toPanel({ type: 'state', state: state() }); }
 const handlers = {
   'state:get': () => state(),
   'settings:save': ({ settings, anthropicKey, sttKey, openrouterKey, omnirouteKey }) => {
-    const modelBefore = stt.engine.mainModel();
+    const modelBefore = stt.engine.mainModel(), autostartBefore = !!store.getSettings().launchAtLogin;
     if (settings) store.saveSettings(settings);
     if (openrouterKey !== undefined) store.setSecret('openrouter', openrouterKey.trim());
     if (omnirouteKey !== undefined) store.setSecret('omniroute', omnirouteKey.trim());
     if (anthropicKey !== undefined) store.setSecret('anthropic', anthropicKey.trim());
     if (sttKey !== undefined) store.setSecret('stt', sttKey.trim());
     const failed = registerHotkeys();
-    applyAutostart();
+    applyAutostart(autostartBefore);
     if (stt.engine.mainModel() !== modelBefore) stt.engine.modelChanged(); // the previous model must not stay loaded
     syncWake();
     return { ...state(), failedHotkeys: failed };
@@ -771,9 +768,13 @@ const handlers = {
     if (!w) return 'No such worker.';
     try {
       const h = await require('./remote/client').health(w);
+      if (!h || h.ok !== true) return `Something answers at ${w.url}, but it is not a MemoBrOS worker.`;
       // An empty command is refused by policy (403) only after the signature has been accepted.
       const probe = await require('./remote/client').call(w, 'POST', '/v1/run', { command: '' });
-      return probe.status === 401 ? `Reached "${h.worker}", but it rejected the secret (${probe.json.error}).` : `Connected to "${h.worker}". The secret is accepted.`;
+      // The worker speaks plain HTTP on its own machine; over a network the traffic must go through an SSH tunnel.
+      let exposed = '';
+      try { const u = new URL(w.url); if (u.protocol === 'http:' && !require('./remote/protocol').isLoopback(u.hostname)) exposed = ' Careful: this address is not on this computer and the connection is not encrypted. Use an SSH tunnel and a 127.0.0.1 address instead.'; } catch { /* reported by the request above */ }
+      return (probe.status === 401 ? `Reached "${w.name}", but it rejected the secret (${probe.json.error}).` : `Connected to "${w.name}". The secret is accepted.`) + exposed;
     } catch (e) { return e.message; }
   },
   // on-device speech models
@@ -822,8 +823,24 @@ const handlers = {
   },
   'folders:remove': ({ folder }) => { store.saveSettings({ sharedFolders: store.sharedFolders().filter((f) => f !== folder) }); return state(); },
 };
-ipcMain.handle('memo', async (_e, channel, payload) => {
-  if (!Object.prototype.hasOwnProperty.call(handlers, channel)) throw new Error(`Unknown channel ${channel}`);
+// Only MemoBrOS's own two windows, showing its own pages, may ask the main process for anything.
+const RENDERER_DIR = path.join(__dirname, '..', 'renderer');
+function ownPage(frame) {
+  if (!frame || frame.parent) return false; // the top frame only
+  const contents = [panel, overlay].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
+  if (!contents.some((c) => c.mainFrame === frame)) return false;
+  try { const u = new URL(frame.url); return u.protocol === 'file:' && path.dirname(require('url').fileURLToPath(u)) === RENDERER_DIR; } catch { return false; }
+}
+// A window that shows a local page stays on it: no navigation, no new windows, no embedded pages asking for rights.
+function lockDown(win) {
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-attach-webview', (e) => e.preventDefault());
+}
+ipcMain.handle('memo', async (e, channel, payload) => {
+  if (!ownPage(e.senderFrame)) throw new Error('This request did not come from a MemoBrOS window.');
+  if (typeof channel !== 'string' || !Object.prototype.hasOwnProperty.call(handlers, channel)) throw new Error(`Unknown channel ${String(channel).slice(0, 60)}`);
+  if (payload !== undefined && payload !== null && (typeof payload !== 'object' || Array.isArray(payload))) throw new Error('A request must carry an object.');
   return handlers[channel](payload || {});
 });
 
@@ -864,7 +881,8 @@ else {
   });
   app.on('window-all-closed', () => {});
   app.on('will-quit', () => { globalShortcut.unregisterAll(); mcp.closeAll(); gateway.stop(); stt.stopWorker(); });
-  app.on('before-quit', () => { app.isQuitting = true; extPointer?.stop(); if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
+  // Quitting stops whatever is still running, with everything it started: no command or agent outlives the app.
+  app.on('before-quit', () => { app.isQuitting = true; task?.abort.abort(); routines.stop(); extPointer?.stop(); if (web.window && !web.window.isDestroyed()) web.window.destroy(); });
 }
 
 if (process.env.MEMOBROS_TEST) global.__memo = { route, toggleListen, state, resolveConfirm, input, routines, web, control, setPaused, heard, caps, stt, actions, get extPointer() { return extPointer; }, wakeMatch: (t) => wake.match(t, store.getSettings().wake.word), worktrees: require('./worktrees'), get overlay() { return overlay; }, get panel() { return panel; } };

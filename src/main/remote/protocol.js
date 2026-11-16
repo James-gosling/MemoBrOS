@@ -15,6 +15,7 @@ function headers(secret, method, path, body) {
 function verify(secret, req, body, seen) {
   const ts = req.headers['x-memobros-timestamp'], nonce = req.headers['x-memobros-nonce'], sig = String(req.headers['x-memobros-signature'] || '');
   if (!ts || !nonce || !sig) return 'unsigned request';
+  if (!/^\d{1,16}$/.test(String(ts)) || !/^[0-9a-f]{16,64}$/i.test(String(nonce))) return 'malformed request';
   if (Math.abs(Date.now() - Number(ts)) > WINDOW_MS) return 'stale request';
   if (seen.has(nonce)) return 'repeated request';
   const want = sign(secret, ts, nonce, req.method, req.url, body);
@@ -24,4 +25,7 @@ function verify(secret, req, body, seen) {
   return null;
 }
 
-module.exports = { headers, verify, sign, WINDOW_MS };
+// Addresses that only this machine can reach.
+const isLoopback = (host) => /^(localhost|127(\.\d{1,3}){3}|::1|\[::1\])$/i.test(String(host || '').trim());
+
+module.exports = { headers, verify, sign, isLoopback, WINDOW_MS };

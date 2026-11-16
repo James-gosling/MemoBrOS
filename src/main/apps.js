@@ -9,8 +9,10 @@ const { plain } = require('./wake');
 
 function dataDirs() {
   const home = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-  const system = (process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share').split(':');
-  return [home, ...system, '/var/lib/snapd/desktop', '/var/lib/flatpak/exports/share', path.join(home, 'flatpak', 'exports', 'share')].filter(Boolean).map((d) => path.join(d, 'applications'));
+  // XDG_DATA_DIRS is the system's own list (on Ubuntu it already names the Snap and Flatpak folders). Those two
+  // are only added by hand when the variable is missing, so what it says is respected - also by the tests.
+  const system = process.env.XDG_DATA_DIRS ? process.env.XDG_DATA_DIRS.split(':') : ['/usr/local/share', '/usr/share', '/var/lib/snapd/desktop', '/var/lib/flatpak/exports/share'];
+  return [...new Set([home, ...system, path.join(home, 'flatpak', 'exports', 'share')].filter(Boolean))].map((d) => path.join(d, 'applications'));
 }
 
 function parse(file) {

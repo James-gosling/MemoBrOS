@@ -8,6 +8,7 @@ const { UnauthorizedError } = require('@modelcontextprotocol/sdk/client/auth.js'
 const http = require('http');
 const { shell } = require('electron');
 const store = require('./store');
+const { cleanEnv } = require('./actions/executor');
 
 // ---- OAuth sign-in for remote servers (Notion, Figma, …) ------------------------------
 // The server sends the user to its sign-in page in their normal browser; the result comes back to a
@@ -71,7 +72,8 @@ async function open(cfg, interactive) {
   if (cfg.type === 'stdio') {
     const [command, ...args] = splitCommand(cfg.command || '');
     if (!command) throw new Error('No command given');
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)), ...parseEnv(store.getSecret(`mcpenv:${cfg.id}`)) };
+    // A connector gets the user's environment without credentials meant for other things, plus the ones entered for it.
+    const env = cleanEnv(process.env, parseEnv(store.getSecret(`mcpenv:${cfg.id}`)));
     const client = newClient();
     try { await client.connect(new StdioClientTransport({ command, args, env, stderr: 'ignore' })); }
     catch (e) { throw new Error(e.code === 'ENOENT' ? `"${command}" is not installed or not on PATH.` : e.message); }

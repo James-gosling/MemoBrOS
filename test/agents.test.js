@@ -28,7 +28,7 @@ test('Claude Code: headless print mode with JSON output and edit-only permission
   assert.equal(out, 'Claude Code report: put src/a.js');
   assert.equal(fs.readFileSync(path.join(cwd, 'src', 'a.js'), 'utf8'), 'hello from claude\n');
   const call = f.calls().at(-1);
-  assert.deepEqual(call.argv, ['-p', '<prompt>', '--output-format', 'json', '--permission-mode', 'acceptEdits'], 'exactly the documented flags, no bypass-permissions mode');
+  assert.deepEqual(call.argv, ['-p', '<prompt>', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits'], 'exactly the documented flags, no bypass-permissions mode');
   assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(cwd));
   // MCP servers MemoBrOS knows are passed in Claude Code's own config format, in a private temporary file
   await agents.runCli('claude', 'look', { cwd, mcpServers: [{ name: 'Sales DB', command: 'node', args: ['db.js'], env: [{ name: 'K', value: 'v' }] }, { type: 'http', name: 'Weather', url: 'https://w/mcp', headers: [{ name: 'Authorization', value: 'Bearer t' }] }] });
@@ -45,6 +45,59 @@ test('Codex: exec with the workspace-write sandbox, pinned to the folder, result
   const call = f.calls().at(-1);
   assert.deepEqual(call.argv.slice(0, 6), ['exec', '-s', 'workspace-write', '-C', cwd, '--skip-git-repo-check']);
   assert.ok(!call.argv.includes('danger-full-access') && !call.argv.includes('--full-auto'), 'never the unrestricted sandbox');
+});
+
+test('progress arrives while the agent works: one short line per event, from each tool\'s own event stream', async () => {
+  const f = fakeAgents(); process.env.PATH = `${f.dir}${path.delimiter}${realPath}`;
+  const cwd = work();
+  const seen = [];
+  const out = await agents.runCli('claude', 'PUT docs/notes.md hi', { cwd, onUpdate: (t) => seen.push(t) });
+  assert.deepEqual(seen, ['Running Claude Code…', 'Using Write on notes.md', 'Wrapping up.']);
+  assert.equal(out, 'Claude Code report: put docs/notes.md', 'the final report still comes from the result event');
+  const codexSeen = [];
+  await agents.runCli('codex', 'PUT c.txt x', { cwd, onUpdate: (t) => codexSeen.push(t) });
+  assert.deepEqual(codexSeen, ['Running Codex…', '$ git status', 'Changed c.txt', 'Finished the task.']);
+  assert.ok(f.calls().at(-1).argv.includes('--json'));
+  // events split across chunks, and lines that are not JSON, are handled
+  assert.deepEqual(agents.jsonLines('{"a":1}\nnot json\n{"b":\n{"c":2}').map((e) => Object.keys(e)[0]), ['a', 'c']);
+});
+
+test('an agent starts with its own sign-in only: other credentials in the environment are withheld', async () => {
+  const f = fakeAgents(); process.env.PATH = `${f.dir}${path.delimiter}${realPath}`;
+  const cwd = work();
+  Object.assign(process.env, { ANTHROPIC_API_KEY: 'a', OPENAI_API_KEY: 'o', GITHUB_TOKEN: 'g', AWS_SECRET_ACCESS_KEY: 's', NPM_TOKEN: 'n', MEMOBROS_WORKER_SECRET: 'w' });
+  try {
+    await agents.runCli('claude', 'look', { cwd });
+    const claude = f.calls().at(-1).envNames;
+    assert.ok(claude.includes('ANTHROPIC_API_KEY') && claude.includes('PATH') && claude.includes('HOME'));
+    assert.deepEqual(['OPENAI_API_KEY', 'GITHUB_TOKEN', 'NPM_TOKEN', 'MEMOBROS_WORKER_SECRET'].filter((k) => claude.includes(k)), []);
+    await agents.runCli('codex', 'look', { cwd, passEnv: 'NPM_TOKEN, NOT_SET' });
+    const codex = f.calls().at(-1).envNames;
+    assert.ok(codex.includes('OPENAI_API_KEY') && codex.includes('NPM_TOKEN'), 'its own key, plus what the user listed by name');
+    assert.deepEqual(['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'MEMOBROS_WORKER_SECRET', 'NOT_SET'].filter((k) => codex.includes(k)), []);
+    assert.ok(!('GITHUB_TOKEN' in agents.agentEnv('kiro')) && !('OPENAI_API_KEY' in agents.agentEnv('custom')), 'ACP agents get the same treatment');
+  } finally { for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'NPM_TOKEN', 'MEMOBROS_WORKER_SECRET']) delete process.env[k]; }
+});
+
+test('Codex receives the MCP servers MemoBrOS knows as configuration overrides; secrets travel in the environment, never on the command line', async () => {
+  const f = fakeAgents(); process.env.PATH = `${f.dir}${path.delimiter}${realPath}`;
+  const cwd = work();
+  const servers = [
+    { name: 'Sales DB', command: 'node', args: ['db.js', 'two words'], env: [{ name: 'DB_PASS', value: 'hunter2' }] },
+    { type: 'http', name: 'Weather', url: 'https://w.example/mcp', headers: [{ name: 'Authorization', value: 'Bearer tok-123' }, { name: 'X-Api-Key', value: 'key-456' }] },
+    { name: 'Clash', command: 'x', env: [{ name: 'DB_PASS', value: 'different' }] },
+    { type: 'sse', name: 'Old', url: 'https://old/sse' },
+  ];
+  const notes = [];
+  await agents.runCli('codex', 'look', { cwd, mcpServers: servers, onUpdate: (t) => notes.push(t) });
+  const call = f.calls().at(-1);
+  assert.deepEqual(call.config, [
+    'mcp_servers.Sales_DB.command="node"', 'mcp_servers.Sales_DB.args=["db.js","two words"]', 'mcp_servers.Sales_DB.env_vars=["DB_PASS"]',
+    'mcp_servers.Weather.url="https://w.example/mcp"', 'mcp_servers.Weather.bearer_token_env_var="MEMOBROS_MCP_1_AUTHORIZATION"', 'mcp_servers.Weather.env_http_headers={"X-Api-Key"="MEMOBROS_MCP_1_X_API_KEY"}',
+  ]);
+  assert.deepEqual(call.mcpEnv, { DB_PASS: 'hunter2', MEMOBROS_MCP_1_AUTHORIZATION: 'tok-123', MEMOBROS_MCP_1_X_API_KEY: 'key-456' });
+  assert.ok(!/hunter2|tok-123|key-456/.test(JSON.stringify(call.argv)), 'no secret appears among the arguments');
+  assert.ok(notes.some((n) => /"Clash" is not shared with Codex: its variable DB_PASS would collide/.test(n)) && notes.some((n) => /"Old" is not shared with Codex: Codex has no "sse" transport/.test(n)), 'what could not be shared is said, not dropped silently');
 });
 
 test('a failing, missing or cancelled agent is reported as such', async () => {
