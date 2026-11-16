@@ -1,10 +1,17 @@
 # Runs the platform-independent test suites on Windows and Linux, and builds the Windows installer.
-# It only runs when started by hand (Actions → Cross-platform tests → Run workflow); nothing runs on push.
+# It runs for pull requests and when started by hand (Actions → Cross-platform tests → Run workflow).
+# It uses no secrets. "pull_request" (not "pull_request_target") runs the pull request's code with a read-only
+# token and, for pull requests from forks, without access to any repository secret.
 name: Cross-platform tests
 on:
   workflow_dispatch:
+  pull_request:
 permissions:
   contents: read
+# A newer push to the same pull request (or branch) replaces the run that is still going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   unit:
     strategy:
