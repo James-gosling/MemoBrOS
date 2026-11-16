@@ -1,7 +1,8 @@
 # ARVI Agent Harness — architecture and v0.7 plan
 
 Written at commit `e29edae` (v0.6.1, branch `claude/memobros-v0.6.1-cloud-hardening`, PR #2). This is a design and a
-plan: no application code was changed for it. It holds no secrets. Companion file: `handoff-v0.7.md` (prompts for
+plan: no application code was changed for it. **Revision 2**: corrected after a critical review; what changed and
+why is listed in section 8, followed by the decision record in section 9. It holds no secrets. Companion file: `handoff-v0.7.md` (prompts for
 other agents).
 
 Evidence labels used throughout, as in `cloud-continuation-v0.6.1.md`: **mock**, **real process**, **real CLI, no
@@ -132,6 +133,9 @@ Plain objects, validated by `contract.js`. Written here as JSDoc-style types; th
 /** @typedef {Object} Task
  * @property {string}  id            // "t_" + time-sortable id; also the folder name
  * @property {string?} parent        // parent task id (crew → subagent, hand-off)
+ * @property {string?} retryOf       // the failed or cancelled task this one repeats, if any
+ * @property {string?} idempotencyKey // set by callers that may fire twice (a routine's id + scheduled time);
+ *                                    // creating a task with a key that already exists returns the existing task
  * @property {'ask'|'agent'|'coding'|'research'|'routine'|'command'|'crew'} kind
  * @property {{type:'user'|'voice'|'routine'|'agent', ref?:string}} origin
  * @property {TaskInput}  input
@@ -148,7 +152,9 @@ Plain objects, validated by `contract.js`. Written here as JSDoc-style types; th
 /** @typedef {Object} TaskInput
  * @property {string} goal                         // what the user asked, verbatim
  * @property {string?} brief                       // what the runner receives (built by context.js)
- * @property {{path:string, kind:'file'|'screenshot'}[]} attachments   // paths inside the profile, never inline data
+ * @property {{path:string}[]} attachments        // files the user attached, by their own path. Screenshots and
+ *                                                 // audio are never written to disk: an event records that one
+ *                                                 // was used, not its content
  * @property {string?} cwd                         // project folder, if any
  * @property {string[]} skills                     // skill ids
  * @property {string[]} mcpServers                 // ids from the one registry
@@ -158,14 +164,17 @@ Plain objects, validated by `contract.js`. Written here as JSDoc-style types; th
  * @property {('edit_files'|'run_commands'|'web'|'vision'|'tools'|'mcp'|'long_running'|'remote_repo')[]} capabilities
  * @property {'none'|'worktree'|'sandbox'|'cloud'} isolation      // the minimum acceptable
  * @property {string?} runner                      // set only when the user named one ("with Codex")
- * @property {'free'|'any'} cost                   // 'free' forbids paid models and cloud agents
+ * @property {'free'|'any'} cost                   // default 'free': no paid model, no cloud agent. 'any' is only
+ *                                                 // ever set by the user for that one task, never by a model,
+ *                                                 // a routine or a fallback
  */
 
 /** @typedef {Object} Grant
  * @property {string[]} roots                      // folders the task may work in
  * @property {('screen'|'microphone'|'commands'|'control'|'network'|'cloud_handoff')[]} permissions
- * @property {string[]} allowRules                 // standing command rules in force for this task
- * @property {'ask'|'auto_within_grant'} approvals // routines and background work stay on 'ask'
+ * @property {'ask'} approvals                     // the only mode in v0.7. Standing "always allow" rules are NOT
+ *                                                 // copied into the task: they are read live at every step, so
+ *                                                 // removing one in Settings takes effect at once (2.5)
  * @property {string[]} passEnv                    // names of variables a runner may see
  */
 
@@ -175,13 +184,19 @@ Plain objects, validated by `contract.js`. Written here as JSDoc-style types; th
  */
 
 /** @typedef {'queued'|'routing'|'awaiting_approval'|'running'|'validating'|'awaiting_merge'
- *          |'succeeded'|'failed'|'cancelled'|'interrupted'} State */
+ *          |'interrupted'|'succeeded'|'failed'|'cancelled'} State
+ *  active:  queued, routing, awaiting_approval, running, validating   (something is, or is about to be, working)
+ *  resting: awaiting_merge, interrupted                               (nothing runs; waits for the user; survives a restart)
+ *  final:   succeeded, failed, cancelled                              (never changes again) */
 
 /** @typedef {Object} Attempt
  * @property {string} runner  @property {string?} provider  @property {string?} model
  * @property {{kind:'local'|'worktree'|'remote_worker'|'vendor_cloud', ref?:string}} environment
  * @property {string} startedAt  @property {string?} endedAt
- * @property {'ok'|'error'|'cancelled'|'timeout'|'unavailable'} outcome
+ * @property {'ok'|'error'|'cancelled'|'timeout'|'unavailable'|'interrupted'|'detached'} outcome
+ *           // 'detached': the work continues somewhere this app cannot stop (a vendor cloud session)
+ * @property {{pid:number, startedAt:string}?} process   // the runner's process, to recognise it after a restart
+ * @property {'confirmed'|'unconfirmed'|'not_applicable'} cleanup   // was the process tree seen to be gone?
  * @property {TaskError?} error
  */
 
@@ -189,7 +204,8 @@ Plain objects, validated by `contract.js`. Written here as JSDoc-style types; th
  * @property {string} summary                      // what the runner reported, as text
  * @property {{branch?:string, files?:string[], commits?:string[], session?:string}} artifacts
  * @property {{ran:boolean, passed?:boolean, command?:string}} validation
- * @property {'reported'|'validated'|'merged'} confidence   // never 'validated' without a check that ran
+ * @property {'reported'|'validated'} confidence          // never 'validated' without a check that ran and passed
+ * @property {'not_applicable'|'pending'|'merged'|'declined'} integration   // what happened to the branch
  */
 
 /** @typedef {Object} TaskError
@@ -206,30 +222,48 @@ Events (appended to the trace, also sent to the panel):
 ```js
 /** @typedef {Object} TaskEvent
  * @property {string} task  @property {number} seq  @property {string} at
- * @property {'state'|'routed'|'approval_requested'|'approval_answered'|'progress'|'output'
- *           |'tool'|'handoff'|'attempt_end'|'result'|'error'} type
+ * @property {'state'|'routed'|'fallback'|'approval_requested'|'approval_answered'|'progress'|'output'
+ *           |'tool'|'side_effect'|'handoff'|'attempt_end'|'cleanup'|'result'|'error'} type
  * @property {Object} data                         // shape depends on type; redacted before writing
  */
+// 'output' events go to the panel only. On disk they are reduced to { stream, bytes }: command output can
+// contain anything a file contains, and no pattern can clean that. Keeping full output is a later, opt-in setting.
+// 'side_effect' is written twice, { phase: 'intent' } before and { phase: 'done' } after, for every step that
+// cannot be undone or repeated safely: a command, an MCP write, an upload, a cloud hand-off, a merge.
 ```
 
-State machine. Any transition not listed is a bug and is rejected by `contract.js`.
+State machine. `contract.js` holds this table; any move not in it is rejected.
 
-```
-queued ──► routing ──► awaiting_approval ──► running ──► validating ──► awaiting_merge ──► succeeded
-              │               │                 │             │               │
-              │               └─ declined ──────┼─────────────┼───────────────┴─► cancelled
-              │                                 │             └─ failed check ──► failed
-              └─ nothing can run it ────────────┼──────────────────────────────► failed
-                                                ├─ retryable error, attempts left ─► routing
-                                                ├─ stop pressed / app quitting ───► cancelled
-                                                └─ process died with the app ─────► interrupted
-```
+| From | May move to |
+| --- | --- |
+| `queued` | `routing`, `cancelled`, `interrupted` |
+| `routing` | `awaiting_approval`, `running`, `failed`, `cancelled`, `interrupted` |
+| `awaiting_approval` | `running`, `cancelled`, `interrupted` |
+| `running` | `awaiting_approval`, `routing`, `validating`, `awaiting_merge`, `succeeded`, `failed`, `cancelled`, `interrupted` |
+| `validating` | `awaiting_merge`, `succeeded`, `failed`, `cancelled`, `interrupted` |
+| `awaiting_merge` | `succeeded`, `cancelled` |
+| `interrupted` | `routing`, `cancelled` |
+| `succeeded`, `failed`, `cancelled` | nothing |
 
-- `validating` and `awaiting_merge` are skipped by kinds that have nothing to validate or merge.
-- `interrupted` is set at start-up for every task found in a non-final state. It is never resumed silently: the
-  user is told, and can retry (a new attempt on the same task) or discard. Worktrees and branches of an
-  interrupted coding task are left exactly as found.
-- `succeeded` with `confidence: 'reported'` is allowed and must be shown as such.
+What each less obvious move means:
+
+- `routing → running` when no approval is needed to start; `routing → failed` when nothing can run the task.
+- `running ⇄ awaiting_approval`: a runner that asks per action (the native loop, an ACP agent) waits here. The
+  runner's process stays alive while it waits. A declined step returns to `running` with the refusal as the
+  step's result (today's behaviour); it only becomes `cancelled` when the user stops the task.
+- `running → routing`: an attempt ended with a retryable error before it did any work (2.6) and
+  `limits.maxAttempts` is not used up.
+- `running → succeeded` directly for kinds with nothing to validate or merge; `running → awaiting_merge` when no
+  validation command is configured.
+- `awaiting_merge → succeeded` both when the user merges (`integration: 'merged'`) and when the user declines
+  (`integration: 'declined'`): the work exists on its branch either way. `→ cancelled` only if the user discards it.
+- `interrupted → routing` only when the user chooses "try again"; `→ cancelled` when the user discards it.
+- A timeout is `failed` with error kind `timeout`, not a state.
+- A failed or cancelled task is never reopened. Trying again creates a new task with `retryOf`.
+
+Parents and children: a parent may not reach a final state while a child is active; cancelling a parent cancels
+its children first; a child's failure does not by itself fail the parent (the parent's own logic decides, as
+`crew.js` does today).
 
 ### 2.4 The runner interface
 
@@ -245,7 +279,8 @@ Every adapter in `runners/` exports the same shape. This is the whole coordinati
 /** @typedef {Object} RunIO
  * @property {AbortSignal} signal
  * @property {(e:{type:'progress'|'output'|'tool', data:Object}) => void} emit
- * @property {(req:{title:string, detail:string, options?:Object}) => Promise<'yes'|'no'|'always'>} approve
+ * @property {(req:{title:string, detail:string, options?:Object}) => Promise<true|false|'always'>} approve
+ *           // the same three answers as the existing confirm() in main.js; no translation layer
  * @property {{cwd:string, env:Object, kind:string}} environment   // prepared by the supervisor, not by the runner
  */
 ```
@@ -287,6 +322,22 @@ Fixed rules, not configurable by a model or a task:
 - An approval is for one step of one task. "Always" creates a standing rule only where `actions/policy.ruleFor`
   allows one.
 
+Persistence and revocation. There are exactly three lifetimes, and each already has a home:
+
+| Lifetime | Stored in | Revoked by | Effect of revoking |
+| --- | --- | --- | --- |
+| One step | The trace only (`approval_answered`), bound to task id, attempt number and a hash of the step text | Cannot be reused, so nothing to revoke | — |
+| Standing rule ("always allow git status") | `settings.actions.allow` (commands), `grants.json` (uploads): existing files | Removing it in Settings | The next step asks again, also in a task that is already running |
+| Capability ("MemoBrOS may run commands") | `settings.permissions`: existing | Switching it off in Settings | The next step of every task is refused. A step already running is not killed by this; Stop and Pause do that |
+
+Rules that follow:
+
+- An answer is never replayed. After a crash, a retry of the interrupted task asks again for everything.
+- A card that is still open when its task ends, is cancelled or is interrupted is withdrawn; answering a stale
+  card does nothing, because the answer carries the step hash and the attempt number.
+- A card that times out counts as declined (existing behaviour for routines).
+- The harness adds no fourth lifetime ("approve everything for this task") in v0.7.
+
 ### 2.6 Routing and fallback
 
 `router.route(task, registrySnapshot)` returns an ordered list of candidates, or an error naming what is missing.
@@ -299,15 +350,30 @@ Fixed rules, not configurable by a model or a task:
 4. Otherwise order by the user's preference list (a new setting, default: the currently configured agent first),
    then by declared strength for the task kind.
 
-Fallback happens only on `TaskError.retryable` and only inside the same grant:
+Fallback is deliberately narrow. Two different things carry the name:
 
-- **Model fallback (native runner):** an ordered chain of `provider:model` entries from the Model Registry, all in
-  the same cost class. `rate_limit`, 5xx and `unavailable` move to the next entry; `auth` and 402 do not (they need
-  the user). Each hop is an event. Default chain for `cost: 'free'`: the configured model, then other free models
-  that support the needed capabilities (tools, vision), then OmniRoute if it answers.
-- **Runner fallback:** only before any file was changed by the failed attempt, or when the failed attempt's
-  worktree is abandoned as-is (kept, not deleted) and the next runner gets a fresh one. Never from a local runner to
-  a cloud runner without asking: that changes where the code goes.
+**Model fallback (native runner only).** One model call failed with a 429, a 5xx or a network error and returned
+nothing. The same messages are sent to the next entry of a chain. Conditions for an entry to be in the chain:
+
+- the same provider as the configured model, unless the user wrote an explicit cross-provider list in Settings.
+  A gateway such as OmniRoute decides upstream on its own, so its real cost is not knowable from here: it is never
+  an automatic target;
+- a price of zero **as listed by the provider's own model list**, fetched less than a day ago. A model the user
+  typed by hand has unknown cost: it can be the primary, never an automatic target;
+- it supports what the call needs (tools, images);
+- it is not marked rate-limited or failing.
+
+`auth`, payment (402) and unknown-model (404) answers never fall back: they need the user. Every hop is an event
+and a visible line in the panel naming both models, because a different model can mean a different company
+receives the screenshot or the text. Nothing is executed twice: tool results already in the conversation stay
+there and the next model continues from them. With `needs.cost: 'free'` a paid model is unreachable by
+construction; there is no setting that turns a paid model into an automatic target.
+
+**Runner fallback.** Automatic only when an attempt ended **before the runner did any work**: the program is
+missing, will not start, fails its handshake, or says it is not signed in before accepting the task. The test is
+mechanical: the attempt's trace holds no `tool`, `side_effect` or `progress` event. In every other case the
+task fails and the user is offered "continue with another agent", which is a hand-off (2.8) they start themselves.
+A runner fallback never crosses from a local runner to a cloud runner, and never replaces a runner the user named.
 
 ### 2.7 Context and memory
 
@@ -349,6 +415,11 @@ A hand-off is a child task, not a message between agents. Agents do not talk to 
 ### 2.9 Observability
 
 - `<profile>/tasks/<id>/task.json` (current state, rewritten atomically) and `events.ndjson` (append-only).
+  `task.json` is the truth; the event file is a log of it. A state change writes `task.json` first and the event
+  second, so a crash between the two loses a log line, never a state. One process writes a profile's tasks: the
+  app's existing single-instance lock per profile is what guarantees it.
+- Not written to disk: screenshots, audio, full command output, the environment. The brief is written (it is what
+  an agent was told) and is redacted like every event.
 - `trace.redact()` runs on every event: values of variables matching the executor's secret pattern, bearer
   tokens, and anything a caller marks as secret.
 - The panel gets a "Tasks" view reading the same files: state, runner, attempts, approvals, result, and the
@@ -370,27 +441,132 @@ Three layers, kept apart in reports:
    scenarios against the real, signed-in program in a scratch Git repository. Prints a result table the owner can
    paste into the state document. This is the only layer that may be reported as **authenticated**.
 
-### 2.11 Recovery and cancellation
+### 2.11 Recovery, duplicate execution and cancellation
 
-- Cancel is one path: `supervisor.cancel(taskId)` aborts the signal; the runner stops its process tree (existing
-  `killTree`) or sends `session/cancel` then closes; the supervisor waits a bounded time, records `cancelled`, and
-  cancels children first.
-- Quitting the app cancels every running task (existing behaviour, generalised).
-- At start: every non-final task becomes `interrupted`; recorded process ids are checked and, if still alive and
-  still the same program, reported to the user rather than killed.
-- A cloud session (Jules) cannot be cancelled from here; the task records the session id and says so.
+**At start-up** (`tasks.recover()`, safe to run any number of times):
 
-### 2.12 Sandbox boundary
+- every task in an *active* state becomes `interrupted`, its open attempt ends with outcome `interrupted`, and
+  its open approval cards are gone;
+- `awaiting_merge` stays as it is: the work is finished and nothing was lost. Before merging, `worktrees.js`
+  already re-checks that the base branch has not moved;
+- `interrupted` and final tasks are left alone;
+- if an attempt recorded a process and a process with that id **and** that start time still exists, the user is
+  told ("Codex from an earlier run may still be working in <folder>"). It is not killed automatically: a process
+  id alone can belong to something else, and killing the wrong program is worse than reporting one;
+- nothing is resumed, re-queued or re-sent by itself. Queued tasks are interrupted too: work the user asked for
+  before a restart does not start on its own after it.
 
-Today's boundary is declarative (policy on the command line) plus Git isolation. The design reserves one field,
-`environment.kind`, and one place, the supervisor's environment preparation, where a real sandbox attaches:
+**Duplicate execution.** The risks, and the rule for each:
 
-- **Linux:** run the runner's process under `bwrap` with the worktree writable, the rest of the home read-only or
-  hidden, and network on or off per grant. Needs `bubblewrap` installed: a system change that needs the owner's
-  approval. Without it the harness reports `isolation: worktree` honestly and does not pretend.
-- **Codex** already applies its own sandbox (`-s workspace-write`); the harness records that as the runner's
-  sandbox and does not wrap it twice by default.
-- **Windows:** not designed here. Needs investigation (restricted token, AppContainer, or WSL).
+| Risk | Rule |
+| --- | --- |
+| A routine tick fires twice for the same slot | The task is created with `idempotencyKey` = routine id + scheduled time; the second create returns the first task |
+| "Try again" on an interrupted task repeats a command, an MCP write or an upload | A retry is a new attempt that asks for every approval again. If the trace shows a `side_effect` with `intent` but no `done`, the retry card says which step may already have happened |
+| "Try again" on an interrupted cloud hand-off creates a second session | Never re-sent automatically. The card says a session may already exist and how to look (`jules remote list`) |
+| A retry continues in a half-written worktree | A new attempt gets a new worktree from the original base. Continuing from the interrupted branch is a hand-off the user chooses; the old worktree is kept untouched |
+| A missed routine runs late after a restart | No catch-up: the next run is the next scheduled time |
+| Model fallback repeats a tool call | Cannot: only a call that returned nothing is re-sent (2.6) |
+
+**Cancellation** is one path, `supervisor.cancel(taskId)`, and may be called any number of times:
+
+1. children are cancelled first;
+2. an open approval card is withdrawn;
+3. the runner is told to stop: an ACP agent gets `session/cancel` and its input is closed; every runner process
+   then gets the existing process-tree stop (terminate, then kill after 1.5 s; `taskkill /T /F` on Windows);
+4. the supervisor waits up to 5 s for the process to be gone and writes a `cleanup` event with
+   `confirmed` or `unconfirmed`. The task becomes `cancelled` in both cases; an unconfirmed cleanup is shown to
+   the user with the folder and process id;
+5. a cloud session cannot be stopped from here: the attempt ends `detached`, the task `cancelled`, and the
+   session id stays on record.
+
+Known limit of the process-tree stop: on Linux and macOS it signals the runner's process group. A program that
+starts a helper in a new session (some agents start MCP servers or daemons that way) escapes it. Only a
+cgroup or a sandbox closes that gap (2.12); until then `cleanup: confirmed` means "the runner's own process
+group is gone", and the documents must not claim more.
+
+Quitting the app cancels every active task this way. Pausing the assistant (existing `setPaused`) cancels the
+active tasks and the supervisor starts none until resumed.
+
+### 2.12 Policy is not isolation
+
+Three layers exist or are planned. They answer different questions and none substitutes for another.
+
+| Layer | Question it answers | What it cannot do | Status |
+| --- | --- | --- | --- |
+| **Application policy** (`actions/policy.js`, approvals) | "Does this command line look like something that may run, and did the user agree?" | Constrain what the program does once started. An approved `node build.js` can read `~/.ssh` and reach the network | Exists |
+| **Git worktree** (`worktrees.js`) | "Do two writers collide, and can the result be reviewed before it reaches my branch?" | Stop an agent from reading or writing anywhere else. See the limits below | Exists |
+| **OS sandbox** (bubblewrap on Linux) | "Can this process touch anything outside the folder and the network it was given?" | Judge intent; replace approvals | **Not present. Evaluation only in v0.7** |
+
+Limits of worktree isolation, to be stated wherever it is described:
+
+- It is the same user account: every file the user can read, the agent can read. Absolute paths and `..` lead out.
+- The object store, configuration and hooks of the repository are shared by all its worktrees. An agent can
+  change `.git/config` or add a hook that later runs in the user's own Git commands.
+- Untracked and ignored files are not in a new worktree: no `node_modules`, no `.env`. Builds can differ from the
+  main folder, and an agent that installs dependencies reaches the network and runs install scripts.
+- Ports, local services, databases, caches and the home folder are shared between "isolated" agents.
+- The validation command (`codeAgent.validate`, for example `npm test`) runs code the agent just wrote, with the
+  user's rights, **before** the user has reviewed it. Whether it runs with the filtered environment was not
+  checked for this document and must be checked before Phase 2 builds on it.
+- Submodules, Git LFS and very large repositories were never tested.
+
+Names, because three different fields were easy to confuse:
+
+| Field | Meaning | Values |
+| --- | --- | --- |
+| `task.needs.isolation` | The least the task accepts | `none`, `worktree`, `sandbox`, `cloud` |
+| `descriptor.isolation` | What the runner must be given, or brings | `none`, `worktree`, `own_sandbox`, `vendor_cloud` |
+| `attempt.environment.kind` | What was actually used | `local`, `worktree`, `remote_worker`, `vendor_cloud` (later: `sandbox`) |
+
+- `needs.isolation: 'sandbox'` cannot be met in v0.7. The router answers `unavailable`; it never downgrades to
+  a worktree.
+- Codex's `-s workspace-write` is the tool's own sandbox. ARVI did not verify what it enforces, so for routing it
+  counts as `worktree`, and the trace records it as "reported by the tool".
+
+Evaluation task for bubblewrap (a document, no installation): which mounts an agent CLI needs to run at all
+(its own configuration and sign-in under the home folder, Node, Git), whether sign-in files can be exposed
+read-only, how network access is granted per task, what breaks under GNOME/Wayland, and how a missing `bwrap` is
+reported. Installing it is a system change that needs the owner's approval. Windows is not designed here.
+
+### 2.13 Interfaces the first revision left out
+
+```js
+// supervisor.js — the only entry point for main.js, crew.js and routines.js
+submit(spec)            -> Task                    // creates (or returns, by idempotencyKey) and queues
+cancel(taskId)          -> Promise<void>           // 2.11; safe to repeat
+retry(taskId)           -> Task                    // only for 'interrupted': a new attempt on the same task
+discard(taskId)         -> void                    // 'interrupted' or 'awaiting_merge' → 'cancelled'; deletes nothing on disk
+subscribe(fn)           -> unsubscribe             // fn(TaskEvent), for the panel
+limits                  -> { writers: 2, total: 1 } // v0.7 keeps one task at a time; 'writers' is the existing crew rule
+
+// router.js — pure
+route(task, snapshot)   -> { candidates: [{ runner, environment, why }], rejected: [{ runner, why }] }
+                           // empty candidates → TaskError 'unavailable' whose message lists `rejected`
+
+// registry.js
+snapshot()              -> { agents: [{ descriptor, availability }], models: [ModelEntry], takenAt }
+refresh({ only })       -> Promise<snapshot>       // runs probes; never a model call
+
+// approvals.js — pure
+required(task, step, live) -> { decision: 'deny'|'ask'|'allow', reason, rule }
+   // step: { kind: 'command'|'edit_outside_worktree'|'cloud_handoff'|'mcp_write'|'merge'|'upload'|'permission_grant', text, cwd }
+   // live: { permissions, allow, grants } read from settings at the moment of the call, never cached on the task
+```
+
+### 2.14 Fit with what exists
+
+| Existing | In the harness | Note |
+| --- | --- | --- |
+| `task` variable in `main.js` | The single active task of the supervisor | Replaced last, after every flow goes through `submit` |
+| `confirm(title, text, opts)` → `true`/`false`/`'always'` | `RunIO.approve`, unchanged answers | The card queue stays in `main.js` |
+| `settings.actions.allow`, `grants.json`, `settings.permissions` | Read live by `approvals.required` | No copy on the task. `grants.json` (upload grants) is unrelated to `task.grant`, despite the name |
+| `actions.log` | Kept; each line gains the task id | The trace does not replace it |
+| Crew agent status `waiting / working / done / failed / stopped` | Child task `queued / running / succeeded / failed / cancelled` | The panel keeps its words |
+| `routines.js` `running` (one at a time) | A task with origin `routine` and an `idempotencyKey` | Scheduling stays in `routines.js` |
+| `setPaused` | Supervisor starts nothing; active tasks cancelled | 2.11 |
+| `MEMOBROS_USER_DATA` profiles | Tasks live in the profile folder | A temporary profile gets its own, empty task list for free |
+| `agents.agentEnv`, `executor.cleanEnv` | The supervisor's environment preparation calls them | No second filter |
+| `worktrees.js` | The `worktree` environment | Unchanged API |
 
 ## 3. Agent Registry and Model Registry
 
@@ -409,12 +585,24 @@ Today's boundary is declarative (policy on the command line) plus Git isolation.
  * @property {{selectable:boolean, how?:string, verified:boolean}} model     // see 3.3
  * @property {RegExp?} keepEnv                 // the vendor's own variables (existing `keep`)
  * @property {number} briefBudget
- * @property {{flags:'help'|'none', run:'mock'|'authenticated'}} evidence    // what has actually been checked
+ * @property {Evidence} evidence                // what has actually been checked, and against which version
+ */
+/** @typedef {Object} Evidence
+ * @property {'none'|'documentation'|'help_output'} interface   // how the command line in the adapter was established
+ * @property {string?} interfaceVersion          // the tool version whose --help was read; another version = unverified
+ * @property {'none'|'mock'|'authenticated'} run // 'authenticated' only after a live acceptance run on real hardware
+ * @property {string?} runDate  @property {string?} runVersion
  */
 ```
 
 `evidence` is part of the descriptor on purpose: the registry itself says which claims are verified, and the panel
-can show "not yet tried with a real task" next to an agent.
+can show "not yet tried with a real task" next to an agent. Evidence belongs to a version: when the probe reports
+a different version from `interfaceVersion`, the panel says the interface is unverified for that version. Evidence
+never blocks a run by itself; it is information for the user and for the router's ordering.
+
+`signedIn: 'unknown'` is the normal answer today and is never treated as "yes". The router may still offer such a
+runner; if it then fails with `auth`, that is a failed start (2.6) and the user is told which program needs a
+sign-in. Nothing in the app may state that an agent is signed in unless a documented check said so.
 
 ### 3.2 Availability (dynamic, from `probe`)
 
@@ -437,7 +625,7 @@ one. No probe may start a model call. Results are cached for a few minutes and r
  * @property {string} provider                 // 'openrouter' | 'omniroute' | 'anthropic' | future ids
  * @property {string} model
  * @property {{tools:boolean, vision:boolean, files:boolean}} capabilities
- * @property {'free'|'paid'|'local'} cost
+ * @property {'free'|'paid'|'unknown'} cost    // 'unknown' for a gateway or a hand-typed model
  * @property {number?} contextChars
  * @property {'listed'|'configured'} source    // from the provider's /models, or typed by the user
  * @property {{state:'ok'|'rate_limited'|'failing', until?:string}} health   // updated from real calls
@@ -446,6 +634,10 @@ one. No probe may start a model call. Results are cached for a few minutes and r
 
 - Filled from `llm.listModels` (already returns free/vision/tools for OpenRouter) and from settings.
 - `health` is updated by the native runner from actual responses; a rate-limited entry is skipped until `until`.
+- `cost` is `free` only when the provider's own list gives a price of zero; the entry then carries `listedAt`,
+  and a listing older than a day no longer proves it. A model typed by the user is `cost: 'unknown'`.
+  The existing `llm.listModels` marks every OmniRoute model as free without evidence; for fallback purposes
+  those are `unknown`.
 - A new provider is one entry in `settings.providers` plus, if it is not OpenAI-compatible, one translation
   function in `llm.js`. The registry does not care which.
 - **Models inside agent runtimes are not in this registry.** Whether a runtime accepts a model choice is a
@@ -500,9 +692,10 @@ each tool is suited to and on what can be verified without the others; any of th
 
 ### Phase 1 — Agent Harness foundation
 
-- **Scope.** `harness/contract.js`, `harness/tasks.js`, `harness/trace.js`: contract, state machine, task store,
-  events, redaction, recovery to `interrupted`. No behaviour change in the app yet; then route **one** existing
-  flow (the `command` kind) through it.
+- **Scope.** Two steps, separately reviewable. **1a:** `harness/contract.js`, `harness/tasks.js`,
+  `harness/trace.js`: contract, state machine, task store, events, redaction, recovery to `interrupted`. Pure
+  modules; no existing file under `src/` changes. **1b** (only after 1a is reviewed): record a task for **one**
+  existing flow, the `command` kind, from `actions/index.js`. 1b is the first change to running code.
 - **Files.** New `src/main/harness/*`, `test/harness.test.js`; later a small change in `src/main/actions/index.js`
   to record a task per command.
 - **Dependencies.** Phase 0 merged or at least pushed, so branches do not diverge.
@@ -510,7 +703,8 @@ each tool is suited to and on what can be verified without the others; any of th
 - **Acceptance.** Every illegal transition is rejected; a task folder left mid-run is reported `interrupted` on
   the next start; no secret appears in any written event; the existing suite is unchanged and green.
 - **Tests.** Plain Node, added to `npm test` and to the CI unit job on both systems.
-- **Primary agent.** Codex (self-contained, pure modules, verifiable by tests alone). Prompt: `handoff-v0.7.md` A.
+- **Primary agent.** Codex for 1a (self-contained, pure modules, verifiable by tests alone; prompt A in
+  `handoff-v0.7.md`). 1b is not assigned yet.
 
 ### Phase 2 — Multi-agent interoperability
 
@@ -522,9 +716,12 @@ each tool is suited to and on what can be verified without the others; any of th
 - **Dependencies.** Phase 1 contract. The model-fallback part depends on nothing and can start in parallel.
 - **Risks.** Silent substitution of an agent or a paid model. Mitigation: rules in 2.6; tests that a named runner
   is never replaced and that a `free` task never reaches a paid model.
-- **Acceptance.** With two agents installed and the first unavailable, a coding task runs on the second and says
-  so; with a named agent unavailable it fails with `unavailable`; a rate-limited free model falls to the next free
-  model with one event per hop; all adapters pass the conformance suite.
+- **Acceptance.** With two agents installed and the first one missing or unable to start, a coding task runs on
+  the second, with a `routed` event and a panel line naming both; an attempt that fails after it began working is
+  **not** retried on another agent; a named agent that is unavailable fails with `unavailable`; a rate-limited
+  free model falls to the next listed-free model of the same provider with one `fallback` event and one panel
+  line per hop; a paid or unknown-cost model is never called by a fallback (asserted from the request log); all
+  adapters pass the conformance suite.
 - **Tests.** Router table tests; conformance suite with stand-ins; fake provider returning 429 then 200.
 - **Primary agent.** Kiro for the model fallback (prompt B); Claude Code for the registry, router and adapters,
   since they touch `crew.js` and the approval flow most.
@@ -546,16 +743,18 @@ each tool is suited to and on what can be verified without the others; any of th
 
 ### Phase 4 — Security hardening
 
-- **Scope.** `harness/approvals.js` as the single decision point; grants on tasks; optional `bwrap` environment
-  on Linux behind a setting; sign-in probes where documented; task id in `actions.log`.
-- **Files.** New `src/main/harness/approvals.js`, `src/main/harness/sandbox.js`; `src/main/main.js` (`confirm`
+- **Scope.** `harness/approvals.js` as the single decision point; grants on tasks; sign-in probes where
+  documented; task id in `actions.log`; and a written **evaluation** of bubblewrap (2.12). No sandbox code, no
+  installation and no setting for it in v0.7.
+- **Files.** New `src/main/harness/approvals.js`, `docs/engineering/sandbox-evaluation.md`; `src/main/main.js` (`confirm`
   callers); `src/main/routines.js` (guardrails call the same function); `docs/agentic-runtime.md`.
-- **Dependencies.** Phases 1 and 2. The sandbox needs the owner's approval to install `bubblewrap`.
+- **Dependencies.** Phases 1 and 2.
 - **Risks.** A regression that makes something ask less than before. Mitigation: a table test listing every
   step kind with its required decision, written **before** the refactor from today's behaviour.
-- **Acceptance.** No step kind is more permissive than in v0.6.1; with the sandbox on, a command approved inside a
-  worktree cannot read `~/.ssh`; with `bwrap` missing the app says so and falls back to worktree isolation.
-- **Tests.** Decision table; a real-process sandbox test that skips itself when `bwrap` is absent.
+- **Acceptance.** No step kind is more permissive than in v0.6.1 (the decision table passes unchanged before and
+  after the refactor); removing a standing rule makes the next step of a running task ask; the evaluation
+  document answers every question listed in 2.12 and names what the owner would have to approve.
+- **Tests.** Decision table; a revocation test.
 - **Primary agent.** Claude Code, with a second agent (Codex) reviewing the decision table only.
 
 ### Phase 5 — Real-hardware acceptance
@@ -572,7 +771,7 @@ each tool is suited to and on what can be verified without the others; any of th
 - **Tests.** The script itself; it is never part of `npm test` or CI.
 - **Primary agent.** The owner runs it. Claude Code or Codex writes the script.
 
-### Phase 6 — Advanced autonomy
+### Phase 6 — Advanced autonomy (not authorised; listed so that earlier phases do not block it)
 
 - **Scope.** Queue with more than one running task; hand-offs (2.8) between different runners; agents on a remote
   worker (the worker gains a "run this runner" endpoint under its own policy); longer routines.
@@ -654,3 +853,83 @@ Needs verification before it may be relied on (each is a small, separate check):
 | Speech accuracy of Tiny/Base versus Small on the laptop's microphone | Same sentences, three models, both languages | laptop |
 | The GNOME pointer extension in a real GNOME Shell 50 session | Install after approval, log out and in | laptop |
 | Windows desktop behaviour of the installer | Install on the Windows partition | Windows |
+
+## 8. Review of revision 1: what was wrong and what changed
+
+| # | Problem in revision 1 | Correction |
+| --- | --- | --- |
+| 1 | The state diagram had no path from `routing` to `running` without an approval, and none back from an approval asked in the middle of a run. | Transition table in 2.3; `running ⇄ awaiting_approval`. |
+| 2 | `interrupted` was called final in one place and retryable in another. | Three classes: active, resting, final. `interrupted` is resting. |
+| 3 | Recovery turned every unfinished task into `interrupted`, including finished work waiting for a merge. | `awaiting_merge` survives a restart. |
+| 4 | A declined merge ended as `cancelled`, as if the work had been thrown away; `confidence: 'merged'` mixed two questions. | `succeeded` with `integration: 'declined'`; `confidence` and `integration` are separate fields. |
+| 5 | Nothing prevented duplicate execution after a retry, a double routine tick or a re-sent cloud hand-off. | `idempotencyKey`, `side_effect` intent/done events, rules table in 2.11. |
+| 6 | The task copied standing rules (`grant.allowRules`), so removing a rule would not have affected a running task. An undefined `auto_within_grant` mode existed. | Rules are read live; the mode is removed; lifetimes and revocation are specified in 2.5. |
+| 7 | Runner fallback "before any file was changed" could not be decided for commands, MCP writes or uploads. | Automatic only when the attempt did no work at all; otherwise a hand-off the user starts. |
+| 8 | Model fallback could cross to OmniRoute, whose real cost is unknown, and trusted an assumed "free" flag. Hops were events only. | Same provider, listed price zero, fresh listing; unknown cost is never a target; every hop is visible. |
+| 9 | The trace would have stored screenshots (as attachment files) and full command output. | Neither is written to disk. |
+| 10 | Process ids were mentioned for recovery but no field held them; a reused id could have been mistaken for the runner. | `attempt.process` with start time; report, never kill automatically. |
+| 11 | Cancellation claimed the process tree is gone without saying how that is known, and ignored helpers that leave the process group. | `cleanup: confirmed/unconfirmed`, the 5 s bound, and the stated limit. |
+| 12 | Worktree isolation was described without its limits; three isolation fields used different words. | 2.12. |
+| 13 | A sandbox module and setting were planned for Phase 4. | Evaluation document only. |
+| 14 | `RunIO.approve` returned `'yes'/'no'/'always'`, the existing `confirm()` returns `true/false/'always'`. | Aligned with the existing function. |
+| 15 | Supervisor, router, registry and approval functions had no signatures; pause was not mentioned. | 2.13 and 2.14. |
+| 16 | Evidence was a two-value flag without version or date. | `Evidence` type in 3.1. |
+| 17 | Phase 1 said "no existing file changes" and "route one flow through it" in the same breath. | Split into 1a and 1b. |
+| 18 | Both hand-off prompts edited the same line of `package.json`; the provider error names in prompt B did not match the contract's error kinds. | See `handoff-v0.7.md`, "Running A and B in parallel". |
+
+## 9. Engineering decision record
+
+Decisions by the owner (binding):
+
+1. PR #1 and PR #2 stay open and unmerged. Experimental v0.7 branches may be based on PR #2. Nothing goes to `main`.
+2. Bubblewrap is evaluated on paper. It is not installed, enabled or coded against.
+3. Codex and Kiro implement first. Claude Code stays fully supported. agy and Jules stay supported targets.
+4. No silent switch to a paid model. No silent transfer of local work to a cloud agent.
+5. No agent is assumed to be signed in without a check on the laptop.
+6. The laptop commit `c345128` is preserved and reconciled before any final integration.
+
+**Ready for implementation**
+
+- Phase 1a: `harness/contract.js`, `harness/tasks.js`, `harness/trace.js` with tests (prompt A). Pure, no
+  existing source file touched, verifiable by CI on Linux and Windows.
+- Model Registry and same-provider, listed-free fallback in `llm.js` (prompt B). Verifiable against the scripted
+  provider only.
+- Windows stand-ins for `test/agents.test.js` (the Jules task in `handoff-v0.7.md` D). Test-only.
+- The bubblewrap evaluation document.
+
+**Requires local verification first**
+
+- Publishing `c345128` and the laptop's uncommitted work; nothing that edits `test/e2e-desktop.js` or files the
+  uncommitted work may touch should be integrated before that.
+- Which agents are installed and signed in on the laptop.
+- One real task with a Stop in the middle for each of Claude Code, Codex and Kiro, before any runner adapter,
+  router or conformance claim is written as more than "mock".
+- Whether the validation command runs with a filtered environment.
+- Every row of the table in section 7.
+
+**Must not be implemented yet**
+
+- Phase 1b and everything after it that changes running flows, until 1a is reviewed.
+- Runner adapters, router and supervisor (Phase 2 beyond the model fallback), until at least one live agent run
+  has shown what real events and cancellation look like.
+- Any sandbox code, setting or installation.
+- More than one task at a time, cross-agent hand-offs, agents on remote workers (Phase 6).
+- Any automatic path to a paid model or to a cloud agent; any "approve everything for this task" mode.
+- Persisting screenshots, audio or full command output.
+- Model selection inside Claude Code, Codex, Kiro, agy or Jules.
+
+**Safest parallel assignment**
+
+| | Codex | Kiro |
+| --- | --- | --- |
+| Task | Prompt A: contract, task store, trace | Prompt B: model registry and fallback |
+| Branch | `codex/harness-foundation` | `kiro/model-fallback` |
+| May create | `src/main/harness/contract.js`, `tasks.js`, `trace.js`, `test/harness.test.js` | `src/main/harness/models.js`, `test/models.test.js` |
+| May edit | `package.json` (test script), one workflow line | `src/main/llm.js`, `src/main/store.js` (one default), `src/main/main.js` (one listener), `test/fakeLLM.js`, `test/e2e-free.js`, one workflow line |
+| Must not touch | Any existing file under `src/` | `package.json`, `src/main/harness/contract.js`, anything under `src/main/actions/`, `agents/`, `crew.js` |
+| Shared files | The workflow file, on lines far apart | The workflow file, on lines far apart |
+| Merge order | First | Second; then one commit adds `test/models.test.js` to the `npm test` script |
+
+Neither may touch `test/e2e-desktop.js` (the laptop fix lives there). Each works in its own worktree created from
+`/home/roy/MemoBrOS-Codex`, never in `/home/roy/MemoBrOS`. Each agent's sign-in is checked by hand on the laptop
+before it is given its prompt.
