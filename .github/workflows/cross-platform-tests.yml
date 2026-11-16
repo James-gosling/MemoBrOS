@@ -30,6 +30,7 @@ jobs:
       - run: node test/speech-models.test.js
       - run: node test/voice.test.js
       - run: node test/worktrees.test.js
+      - run: node test/autostart.test.js
       # The stand-in agent programs are shell scripts on a Unix PATH; the Windows variant has never been run.
       - if: runner.os == 'Linux'
         run: node test/agents.test.js

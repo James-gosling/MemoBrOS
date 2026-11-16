@@ -393,6 +393,49 @@ async function speechFailurePart() {
   } finally { await quit(app); host.close(); }
 }
 
+// The real app, started the way the tests and an acceptance run start it (its own settings folder), in a home
+// folder made for this test. What stands in for the user's real autostart entry must come through untouched.
+async function autostartPart() {
+  const t = setup('autostart', {});
+  const home = path.join(t.userData, 'home');
+  const real = path.join(home, '.config', 'autostart', 'memobros.desktop');
+  fs.mkdirSync(path.dirname(real), { recursive: true }); fs.writeFileSync(real, 'the real entry\n');
+  const launch = async (extra) => {
+    const app = current = await _electron.launch({ executablePath: electronBin, args: [...appArgs, '--no-sandbox'], env: { ...t.env, HOME: home, ...extra } });
+    const panel = await until(() => app.windows().find((w) => w.url().endsWith('panel.html')), 'panel window');
+    await panel.waitForSelector('.empty');
+    return { app, panel, invoke: (channel, payload) => panel.evaluate(([c, p]) => window.memo.invoke(c, p), [channel, payload]) };
+  };
+  const save = (invoke, settings) => invoke('settings:save', { settings });
+  await check('autostart: a temporary profile cannot change the real entry; with a folder of its own the normal behaviour works', async () => {
+    let { app, panel, invoke } = await launch({});
+    try {
+      const st = await invoke('state:get');
+      assert.deepEqual([st.autostart.kind, st.autostart.manages], ['temporary', false]);
+      await panel.click('#tabs [data-tab="settings"]');
+      assert.ok(await panel.locator('#set-autostart').isDisabled(), 'the switch is not offered in a temporary profile');
+      for (const on of [true, false, true, false]) await save(invoke, { launchAtLogin: on, speak: on }); // even if asked directly
+      await panel.locator('button', { hasText: 'Save settings' }).click(); await sleep(500); // and through the settings form itself
+      assert.equal(fs.readFileSync(real, 'utf8'), 'the real entry\n', 'not rewritten, not removed');
+      assert.deepEqual(fs.readdirSync(path.dirname(real)), ['memobros.desktop'], 'and nothing was added next to it');
+    } finally { await app.close().catch(() => {}); }
+    const own = path.join(t.userData, 'own-autostart');
+    ({ app, panel, invoke } = await launch({ MEMOBROS_AUTOSTART_DIR: own }));
+    try {
+      assert.equal((await invoke('state:get')).autostart.manages, true);
+      await save(invoke, { launchAtLogin: false }); await save(invoke, { launchAtLogin: true });
+      const entry = fs.readFileSync(path.join(own, 'memobros.desktop'), 'utf8');
+      assert.match(entry, /^Exec=".+" --hidden$/m); assert.match(entry, /^X-GNOME-Autostart-enabled=true$/m);
+      fs.writeFileSync(path.join(own, 'memobros.desktop'), 'edited by hand\n');
+      await save(invoke, { speak: false });
+      assert.equal(fs.readFileSync(path.join(own, 'memobros.desktop'), 'utf8'), 'edited by hand\n', 'saving other settings leaves the entry alone');
+      await save(invoke, { launchAtLogin: false });
+      assert.ok(!fs.existsSync(path.join(own, 'memobros.desktop')), 'turning it off removes the entry');
+      assert.equal(fs.readFileSync(real, 'utf8'), 'the real entry\n');
+    } finally { await app.close().catch(() => {}); }
+  });
+}
+
 async function waylandPart() {
   if (spawnSync('which', ['weston']).status !== 0) { console.log('SKIP  native Wayland run (weston is not installed)'); return; }
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'memobros-xdg-'));
@@ -516,7 +559,7 @@ async function waylandPart() {
   fs.mkdirSync(out, { recursive: true });
   api = await fake.start();
   try {
-    if (process.env.DISPLAY) { await x11Part(); await noMicPart(); await speechFailurePart(); } else console.log('SKIP  X11 part (no DISPLAY)');
+    if (process.env.DISPLAY) { await x11Part(); await noMicPart(); await speechFailurePart(); await autostartPart(); } else console.log('SKIP  X11 part (no DISPLAY)');
     await waylandPart();
   } finally { api.close(); }
   const failed = results.filter((r) => r[1] === 'FAIL').length;
