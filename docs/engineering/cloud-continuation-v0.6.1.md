@@ -31,6 +31,7 @@ Windows. This file holds no secrets.
 | 8 | Worker: a non-numeric timestamp passed the freshness check (the signature was still required); oversized bodies were dropped without an answer. | Low | Fixed: 401 `malformed request`, 413 `request too large`, 400 for wrong types. |
 | 9 | The main process accepted IPC from any frame; the panel and overlay could be navigated. | Medium | Fixed: only the top frame of the two local pages is served; navigation, new windows and webviews are refused. |
 | 10 | Quitting left a running command or agent alive. | Medium | Fixed: quitting aborts the running request and routine (process tree included). |
+| 12 | Saving settings rewrote or deleted the real `~/.config/autostart/memobros.desktop`, also from a test run or a profile with its own settings folder. | High | Fixed: temporary profiles never manage autostart; the installed profile only on a change of that setting. |
 | 11 | A false positive: text that mentions a forbidden word (`git commit -m "remove sudo usage"`) was refused. | Low | Fixed for plain commands; lines that need a shell keep the broad patterns. |
 
 Still open, by design or because it needs a decision:
@@ -84,13 +85,18 @@ One registry: `settings.mcpServers` (secrets in the OS keychain through `safeSto
   with plain arguments. Tested as a pure function on Linux with a simulated file system.
 - Process-tree cancellation uses `taskkill /T /F` (unchanged, untested on Windows).
 - The policy recognises Windows forms (`C:\`, `%USERPROFILE%`, `.exe` suffixes, `cmd /c`); tested on Linux only.
-- `.github/workflows/cross-platform-tests.yml` runs the unit suites on `windows-latest` when started by hand. It has
-  **never been run**. Starting it is the next step toward Windows evidence.
+- `.github/workflows/cross-platform-tests.yml` runs the unit suites on `windows-latest` for every pull request.
+  They pass there (see section 3). That is automated evidence, not desktop validation.
 
 ## 3. Automated tests (cloud container, at the head of this branch)
 
-`npm test`: worktrees 8/8, voice 7/7, speech models 11/11, pointer 4/4, actions 14/14, agents 9/9, remote worker 8/8,
-Electron (Anthropic path) 9/9, Electron (free providers) 17/17, Electron desktop 13/13, real speech models 4/4.
+`npm test`: worktrees 8/8, voice 7/7, speech models 11/11, pointer 4/4, autostart 5/5, actions 14/14, agents 9/9,
+remote worker 8/8, Electron (Anthropic path) 9/9, Electron (free providers) 17/17, Electron desktop 14/14, real speech
+models 4/4.
+
+GitHub Actions (pull requests): unit suites on `ubuntu-latest` and `windows-latest`, two Electron suites on Linux, and
+the Windows installer build. A green Windows run means those unit suites pass on a headless Windows server and the
+installer builds; it says nothing about the installed app on a Windows desktop.
 
 - mock: the model (scripted server), the agent CLIs, `gdbus`, the model download host, ACP agent.
 - real process: commands, process trees, Git worktrees, the worker over loopback HTTP, sherpa-onnx with real Whisper
@@ -108,26 +114,86 @@ Electron (Anthropic path) 9/9, Electron (free providers) 17/17, Electron desktop
 - No accounts, no keys, no network beyond localhost.
 - On a real GNOME session the tests open real windows; run them under `xvfb-run` so they do not take over the desktop.
 
-## 5. Acceptance tests that only the real machines can give
+## 5. Acceptance on the Ubuntu laptop (unverified until run there)
 
-Ubuntu laptop (GNOME 50, Wayland):
+Everything below happens in the clean checkout `/home/roy/MemoBrOS-Codex`. The development folder
+`/home/roy/MemoBrOS` is never entered. Your real settings, saved keys, routines, connectors and autostart entry are
+not read or changed: the tests and the acceptance run use their own settings folders, and a profile started that way
+cannot change the autostart entry (section 5.4).
 
-1. `git fetch && git switch claude/memobros-v0.6.1-cloud-hardening && npm install && npm test` — expect the numbers above
-   (the voice test was reported failing there; this branch contains a likely fix, unconfirmed).
-2. Start the app. Say or type "run git status in my project": approval card, then the output appears in the panel
-   while it runs. Ask for `sudo ls` and for `"sudo" ls`: both refused, no card.
-3. Ask for a long command (`ping -c 30 127.0.0.1`), press Stop: output stops, `pgrep ping` finds nothing.
-4. With Claude Code or Codex signed in: a small crew task in a Git project. Check progress lines appear, the work
-   lands on its own branch, the merge card appears. Press Stop during the model's work and confirm with `pgrep`
-   that the agent is gone. This is the missing "authenticated" evidence.
-5. In that agent's task, ask it to print `env | grep -i token`: other tools' tokens must be absent.
-6. Codex with one MCP server configured in MemoBrOS: ask it to list its tools.
-7. Worker: `npm run worker -- --root ~/some-project` in one terminal, add it in Settings, run a command on it.
-   `npm run worker -- --root . --host 0.0.0.0` must refuse to start.
-8. Everything already confirmed in v0.5/v0.6 still works: tray, ARVI in Spanish and English, dictation, pointer.
+### 5.1 Install and run the automated tests
 
-Windows: run the workflow by hand first; then on the real partition install, start, run one command, stop one
-command, and one agent task with a `.cmd`-installed CLI.
+```bash
+# Quit the running MemoBrOS first (tray → Quit): one microphone, one set of global shortcuts.
+which xvfb-run || sudo apt install -y xvfb      # the only system change, and only if it is missing
+cd /home/roy/MemoBrOS-Codex
+git status --short                               # must print nothing; stop if it does
+git fetch origin
+git switch claude/memobros-v0.6.1-cloud-hardening
+npm ci                                           # exactly the locked versions; replaces node_modules in this folder only
+npm test
+```
+
+Expected: worktrees 8/8, voice 7/7, speech models 11/11, pointer 4/4, autostart 5/5, actions 14/14, agents 9/9,
+remote worker 8/8, Electron 9/9, 17/17 and 14/14. The real-speech suite prints SKIP. No account, key or network
+service is used: the model is a scripted stand-in on localhost. The Wayland part of the desktop suite is skipped
+when `weston` is not installed; that is fine.
+
+### 5.2 Start the app with a temporary acceptance profile
+
+```bash
+mkdir -p ~/memobros-acceptance/project && git -C ~/memobros-acceptance/project init -q
+MEMOBROS_USER_DATA="$HOME/memobros-acceptance/profile" npm start
+```
+
+The profile starts empty (no keys, every permission off, no routines, no connectors). In Settings:
+
+- "Start MemoBrOS with the system" is greyed out. That is the isolation working.
+- Coding agent → project folder: `~/memobros-acceptance/project`. Commands can only run there.
+- A model: paste a free OpenRouter key (a free account is enough, no payment method), or point it at OmniRoute if
+  you already run it locally. The key is stored in the temporary profile only.
+- Do not press "Install" for the GNOME pointer extension in this run: that button copies files into your real
+  extensions folder. It is optional and not part of this acceptance.
+
+### 5.3 Checks
+
+| # | Do | Expect |
+| --- | --- | --- |
+| 1 | Type: "run git status in my project" | A card asks to allow commands at all, then a card shows the exact command and folder. After approving, the output appears in the panel. |
+| 2 | Ask again, choose "Always allow git status", ask a third time | The third time runs without a card. `git status -uall` still runs without a card; `git push` asks. |
+| 3 | Ask for `sudo ls`, then for `"sudo" ls` | Both refused, no card. |
+| 4 | Ask for `cat /etc/hostname` | A card with "reaches outside the allowed folders"; no "always allow" offered. |
+| 5 | Ask for `ping -c 30 127.0.0.1`, approve, wait for a few lines, press Stop | Lines arrive one by one; after Stop, `pgrep -x ping` in a terminal prints nothing. |
+| 6 | Start the ping again, then quit from the tray | `pgrep -x ping` prints nothing. |
+| 7 | In a terminal: `npm run worker -- --root ~/memobros-acceptance/project --host 0.0.0.0` | Refuses to start ("only listens on this machine"). |
+| 8 | Tray icon, show/hide, "ARVI" in Spanish and English, dictation, pointer | As in v0.5/v0.6. Speech models are downloaded again into the temporary profile (Tiny is about 100 MB). |
+| 9 | Optional, only with Claude Code or Codex already signed in: one small crew task, Stop in the middle | Progress lines appear; after Stop `pgrep -f "claude|codex"` is empty; the work is on its own branch. Uses that agent's quota. |
+
+Check afterwards that nothing of yours changed:
+
+```bash
+ls -l ~/.config/autostart/ 2>/dev/null          # same as before the run
+ls -l --time-style=long-iso ~/.config/MemoBrOS/settings.json   # not modified during the run
+```
+
+Clean up when done: `rm -rf ~/memobros-acceptance`. To go back: `git switch claude/festive-wozniak-5h9t6d` in the
+Codex checkout, or simply leave it.
+
+### 5.4 What protects the real configuration
+
+- `MEMOBROS_USER_DATA` gives the app its own settings folder: settings, encrypted keys, routines, connectors,
+  memory, speech models and the action log all live there.
+- A profile started with `MEMOBROS_USER_DATA` (or by the tests) is a *temporary* profile. It never writes,
+  replaces or removes `~/.config/autostart/memobros.desktop`, whatever is saved in it. The installed profile only
+  touches the entry when you change that one setting, so saving other settings no longer rewrites it.
+- Still shared with the real session, by nature: the microphone, the tray, global shortcuts, the desktop keyring
+  (read to decrypt keys; the temporary profile stores its own keys in its own folder) and, if you use them, the
+  sign-ins of external agent CLIs.
+
+### 5.5 Windows
+
+Run only after the Ubuntu acceptance. The installer from the CI run is unsigned and untested on a real desktop:
+install, start, run one command, stop one command, and one agent task with a `.cmd`-installed CLI.
 
 ## 6. Comparison with the laptop's uncommitted work — BLOCKED
 
