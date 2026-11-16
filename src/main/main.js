@@ -25,6 +25,7 @@ const llm = require('./llm');
 const mcp = require('./mcp');
 const web = require('./webagent');
 const routines = require('./routines');
+const autostart = require('./autostart');
 const wake = require('./wake');
 const apps = require('./apps');
 const { ExtensionPointer } = require('./pointer');
@@ -624,18 +625,11 @@ function route(text, mode) {
 }
 
 // ---- start with the system (so routines keep running) -----------------------------------------
-function applyAutostart() {
-  const on = !!store.getSettings().launchAtLogin;
+// Only when the user changes the setting, and never from a temporary profile: see autostart.js.
+function applyAutostart(was) {
   try {
-    if (process.platform === 'linux') {
-      const file = path.join(app.getPath('home'), '.config', 'autostart', 'memobros.desktop');
-      if (!on) { fs.rmSync(file, { force: true }); return; }
-      const exec = process.env.APPIMAGE || (app.isPackaged ? process.execPath : `${process.execPath}" "${app.getAppPath()}`);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=MemoBrOS\nComment=Screen-aware AI buddy\nExec="${exec}" --hidden\nX-GNOME-Autostart-enabled=true\n`);
-    } else if (app.isPackaged || on === false) {
-      app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] });
-    }
+    const step = autostart.plan({ was, on: !!store.getSettings().launchAtLogin, home: app.getPath('home'), packaged: app.isPackaged, execPath: process.execPath, appPath: app.getAppPath() });
+    autostart.apply(step, (o) => app.setLoginItemSettings(o));
   } catch (e) { console.warn('autostart:', e.message); }
 }
 
@@ -645,6 +639,7 @@ function state() {
   return {
     display: env.display, session: env.session, caps, paused, wakeOn, activity, hotkeys: hotkeyReport, compact: !!(s.window || {}).compact,
     pointer: { backend: pointerBackend(), ...s.pointer },
+    autostart: (({ kind, manages, reason }) => ({ kind, manages, reason }))(autostart.profile()),
     speech: stt.engine.models().all(), speechModel: stt.engine.mainModel(),
     settings: s, hasKey: brain.hasKey(), hasSttKey: !!store.getSecret('stt'), platform: process.platform, llm: llm.describe(),
     keys: { openrouter: !!store.getSecret('openrouter'), omniroute: !!store.getSecret('omniroute'), anthropic: !!store.getSecret('anthropic') },
@@ -657,14 +652,14 @@ function pushState() { toPanel({ type: 'state', state: state() }); }
 const handlers = {
   'state:get': () => state(),
   'settings:save': ({ settings, anthropicKey, sttKey, openrouterKey, omnirouteKey }) => {
-    const modelBefore = stt.engine.mainModel();
+    const modelBefore = stt.engine.mainModel(), autostartBefore = !!store.getSettings().launchAtLogin;
     if (settings) store.saveSettings(settings);
     if (openrouterKey !== undefined) store.setSecret('openrouter', openrouterKey.trim());
     if (omnirouteKey !== undefined) store.setSecret('omniroute', omnirouteKey.trim());
     if (anthropicKey !== undefined) store.setSecret('anthropic', anthropicKey.trim());
     if (sttKey !== undefined) store.setSecret('stt', sttKey.trim());
     const failed = registerHotkeys();
-    applyAutostart();
+    applyAutostart(autostartBefore);
     if (stt.engine.mainModel() !== modelBefore) stt.engine.modelChanged(); // the previous model must not stay loaded
     syncWake();
     return { ...state(), failedHotkeys: failed };

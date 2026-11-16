@@ -568,7 +568,7 @@ function renderSettings() {
   renderAgent();
   $('set-code-cmd').value = s.codeAgent.command; $('set-code-cwd').value = s.codeAgent.cwd; $('set-code-validate').value = s.codeAgent.validate || ''; $('set-code-protected').value = (s.codeAgent.protected || []).join(', ');
   $('set-gateway-cmd').value = s.crewGateway.command; renderGateway(); renderWorkers();
-  $('set-autostart').checked = !!s.launchAtLogin;
+  $('set-autostart').checked = !!s.launchAtLogin; $('set-autostart').disabled = !S.autostart.manages; $('set-autostart').parentElement.title = S.autostart.reason || '';
   $('set-speak').checked = s.speak; $('set-polish').checked = s.dictationPolish; $('set-confirm-each').checked = s.confirmEachAction;
   fillVoices();
   $('hotkeys').replaceChildren(...Object.entries(HOTKEY_LABELS).map(([k, label]) => h('div', { className: 'hk' }, label, h('input', { value: s.hotkeys[k], id: `hk-${k}` }))));
