@@ -5,7 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const { StringDecoder } = require('string_decoder');
 
-const SECRET = /(API_?KEY|ACCESS_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|PRIVATE_KEY|COOKIE|(^|_)PAT$|(^|_)DSN$|DATABASE_URL|CONNECTION_STRING)/i;
+// The last group: everything that configures the backup tools. A repository address or an rclone setting can carry
+// sign-in data under any name, so the whole families are withheld from commands and agents.
+const SECRET = /(API_?KEY|ACCESS_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|PRIVATE_KEY|COOKIE|(^|_)PAT$|(^|_)DSN$|DATABASE_URL|CONNECTION_STRING|^RESTIC_|^RCLONE_|^B2_ACCOUNT_)/i;
 // The child gets the user's environment minus anything that looks like a credential.
 // `keep` (a RegExp or a list of exact names) lets named variables through: an agent's own sign-in, for example.
 function cleanEnv(env = process.env, extra = {}, keep = null) {
