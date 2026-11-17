@@ -167,7 +167,7 @@ test('an upload whose read-back did not happen stays "uploaded" and can be verif
 test('a damaged backup is detected, never reported as good, and the independent copy still restores', async () => {
   const w = await world(), dir = data();
   await w.orch.backup({ set: 'profile', dir, category: 'app_settings' });
-  for (const f of allFiles(path.join(w.primary.repo, 'data'))) { const b = fs.readFileSync(f); for (let i = 40; i < Math.min(b.length, 400); i++) b[i] ^= 0xff; fs.writeFileSync(f, b); }
+  for (const f of allFiles(path.join(w.primary.repo, 'data'))) { const b = fs.readFileSync(f); for (let i = 40; i < Math.min(b.length, 400); i++) b[i] ^= 0xff; fs.chmodSync(f, 0o600); fs.writeFileSync(f, b); } // restic makes its pack files read-only; only root could write to them without this
   const into = path.join(root, `restore-${++n}`);
   assert.equal(await kindOf(w.orch.restore({ set: 'profile', from: 'drive', into })), 'corrupt');
   const st = w.orch.status('profile');
@@ -369,7 +369,7 @@ test('cancelling and crashing leave no scratch folders, and no backup tool proce
 test('disk full: a backup target without space stays pending, a restore without space fails cleanly, local data is untouched', async () => {
   const tiny = path.join(root, 'tiny');
   fs.mkdirSync(tiny);
-  if (process.platform !== 'linux' || spawnSync('mount', ['-t', 'tmpfs', '-o', 'size=1m', 'tmpfs', tiny]).status !== 0) { console.log('      (skipped: a small test file system could not be mounted here; needs root on Linux)'); return; }
+  if (process.platform !== 'linux' || spawnSync('mount', ['-t', 'tmpfs', '-o', 'size=1m', 'tmpfs', tiny]).status !== 0) return 'SKIP: a small test file system could not be mounted here (needs root on Linux)';
   try {
     const dir = data();
     fs.writeFileSync(path.join(dir, 'large.bin'), crypto.randomBytes(3 * 1024 * 1024));
@@ -392,10 +392,15 @@ test('disk full: a backup target without space stays pending, a restore without 
   const v = await restic.version();
   if (!v) { console.log('SKIP  backup and restore with restic (restic is not installed)'); process.exit(0); }
   console.log(`      using ${v}${hasRclone ? ' and rclone' : ' (rclone not installed: the recovery target is a plain folder)'}`);
-  let failed = 0;
-  for (const [name, fn] of tests) { try { await fn(); console.log(`PASS  ${name}`); } catch (e) { failed++; console.log(`FAIL  ${name}\n      ${String(e.stack || e.message).split('\n').slice(0, 5).join(' | ')}`); } }
+  let failed = 0, skipped = 0;
+  for (const [name, fn] of tests) {
+    try {
+      const out = await fn();
+      if (typeof out === 'string' && out.startsWith('SKIP')) { skipped++; console.log(`SKIP  ${name}\n      ${out}`); } else console.log(`PASS  ${name}`);
+    } catch (e) { failed++; console.log(`FAIL  ${name}\n      ${String(e.stack || e.message).split('\n').slice(0, 5).join(' | ')}`); }
+  }
   spawnSync('umount', [path.join(root, 'tiny')]);
   fs.rmSync(root, { recursive: true, force: true });
-  console.log(`\n${tests.length - failed}/${tests.length} passed`);
+  console.log(`\n${tests.length - failed - skipped}/${tests.length} passed${skipped ? `, ${skipped} skipped` : ''}`);
   process.exit(failed ? 1 : 0);
 })();
