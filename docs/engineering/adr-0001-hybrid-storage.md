@@ -1,6 +1,13 @@
 # ADR 0001 — Hybrid, encrypted storage for ARVI / MemoBrOS
 
-- **Status:** proposed. Awaiting the owner's decision; nothing here is deployed.
+- **Status:** Accepted for MVP architecture — implementation pending security review and local acceptance.
+- **Accepted by the owner on 2026-11-17, for the architecture only:** private GitHub for approved code and
+  documentation; Google Drive as the intended encrypted backup destination; restic plus rclone as the preferred
+  implementation; Ubuntu as the local execution environment and operational source of truth; an optional
+  independent disaster-recovery copy, **provider undecided** (neither Backblaze B2 nor Cloudflare R2 is chosen).
+- **Not authorised by this acceptance:** production uploads; real Google Drive OAuth configuration; deleting or
+  moving local files; automated retention; backup scheduling; cloud billing; merging pull requests; production
+  deployment. Nothing here is deployed.
 - **Date:** 2026-11-17.
 - **Context document:** `arvi-hybrid-storage-v0.7.md`. **Procedure:** `storage-runbook.md`.
 
