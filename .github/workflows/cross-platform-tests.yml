@@ -60,3 +60,21 @@ jobs:
           name: memobros-windows-installer
           path: dist/*.exe
           if-no-files-found: error
+  # Storage: the placement policy on both systems; real encrypted backup and restore with restic and rclone on
+  # Linux, against repositories in temporary folders. No account, no secret, nothing leaves the runner.
+  storage:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node test/storage.test.js
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y restic rclone
+      - if: runner.os == 'Linux'
+        run: node test/storage-restic.test.js
