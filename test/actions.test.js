@@ -128,6 +128,8 @@ test('credentials are recognised by name, including access keys, personal tokens
   const env = { PATH: 'p', HOME: 'h', SSH_AUTH_SOCK: 's', XDG_SESSION_TYPE: 'wayland', DBUS_SESSION_BUS_ADDRESS: 'd', XAUTHORITY: 'x', AWS_ACCESS_KEY_ID: '1', AWS_SECRET_ACCESS_KEY: '2', GITHUB_PAT: '3', GH_TOKEN: '4',
     DATABASE_URL: '5', SENTRY_DSN: '6', SESSION_COOKIE: '7', OPENAI_API_KEY: '8', GPG_PASSPHRASE: '9', AZURE_STORAGE_CONNECTION_STRING: '10' };
   assert.deepEqual(Object.keys(cleanEnv(env)), ['PATH', 'HOME', 'SSH_AUTH_SOCK', 'XDG_SESSION_TYPE', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY']);
+  const backup = { RESTIC_REPOSITORY: 'rest:https://u:p@h/r', RESTIC_PASSWORD: 'x', RESTIC_PASSWORD_COMMAND: 'c', RESTIC_PASSWORD_FILE: 'f', RCLONE_CONFIG: '/c', RCLONE_CONFIG_PASS: 'x', RCLONE_CONFIG_GDRIVE_TYPE: 'drive', B2_ACCOUNT_ID: 'i', B2_ACCOUNT_KEY: 'k', PATH: 'p' };
+  assert.deepEqual(Object.keys(cleanEnv(backup)), ['PATH'], 'nothing that configures the backup tools reaches a command or an agent');
   assert.deepEqual(Object.keys(cleanEnv(env, {}, /^OPENAI_/)).slice(-1), ['OPENAI_API_KEY']); assert.ok('GH_TOKEN' in cleanEnv(env, {}, ['GH_TOKEN']));
 });
 

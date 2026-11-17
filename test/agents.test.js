@@ -75,6 +75,9 @@ test('an agent starts with its own sign-in only: other credentials in the enviro
     const codex = f.calls().at(-1).envNames;
     assert.ok(codex.includes('OPENAI_API_KEY') && codex.includes('NPM_TOKEN'), 'its own key, plus what the user listed by name');
     assert.deepEqual(['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'MEMOBROS_WORKER_SECRET', 'NOT_SET'].filter((k) => codex.includes(k)), []);
+    Object.assign(process.env, { RESTIC_PASSWORD: 'r', RESTIC_REPOSITORY: 'x', RCLONE_CONFIG_PASS: 'c' });
+    for (const id of ['kiro', 'claude', 'codex', 'agy', 'jules', 'custom']) assert.deepEqual(Object.keys(agents.agentEnv(id)).filter((k) => /^(RESTIC|RCLONE)_/.test(k)), [], `${id} never sees backup credentials`);
+    for (const k of ['RESTIC_PASSWORD', 'RESTIC_REPOSITORY', 'RCLONE_CONFIG_PASS']) delete process.env[k];
     assert.ok(!('GITHUB_TOKEN' in agents.agentEnv('kiro')) && !('OPENAI_API_KEY' in agents.agentEnv('custom')), 'ACP agents get the same treatment');
   } finally { for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'NPM_TOKEN', 'MEMOBROS_WORKER_SECRET']) delete process.env[k]; }
 });

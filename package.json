@@ -18,7 +18,8 @@
     "install:desktop": "node scripts/install-desktop.js",
     "test:speech": "xvfb-run -a -s \"-screen 0 1280x800x24\" node test/speech-real.test.js",
     "pointer:install": "node scripts/install-pointer-extension.js",
-    "worker": "node src/main/remote/worker.js"
+    "worker": "node src/main/remote/worker.js",
+    "test:storage": "node test/storage.test.js && node test/storage-restic.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
