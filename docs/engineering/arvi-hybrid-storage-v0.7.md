@@ -301,3 +301,28 @@ Nothing in this plan deletes a local original because a backup exists. The exist
 | Scheduling, quota monitoring, health history, panel views, eviction UI, app integration | **Designed** |
 | Windows | The policy suite only. restic on Windows was not run |
 | Disk numbers | Cloud checkout only. The laptop's are **unmeasured** |
+
+## 10. Security review of the storage branch (2026-11-17)
+
+Scope: only `src/main/storage/*` and the one shared change in `src/main/actions/executor.js`. Evidence for every
+"fixed" line is a test in `test/storage.test.js`, `test/storage-restic.test.js`, `test/actions.test.js` or
+`test/agents.test.js` (**real process** with restic, except the pure ones).
+
+| # | Risk | Finding before | Now |
+| --- | --- | --- | --- |
+| 1 | Backup set authorization | `backup()` trusted the caller: a folder and a category. Any file in the folder, including `.env`, keys, `rclone.conf`, `node_modules`, logs, links, was uploaded | **Fixed in part.** The whole set is refused, naming the files, if it contains a forbidden file name (`policy.forbiddenFile`), a symbolic link or special file, or nothing at all; the set folder itself may not be a link. Set names and keys are validated, so they cannot forge a second snapshot tag. **Still trusts the caller for content:** a secret saved under an innocent name, or written inside `settings.json`, passes. The only real defence is that the code that builds a set lists its files explicitly (integration step 3) |
+| 2 | Secret isolation | The password reaches only the restic process, through its environment. Error text could quote a repository address with a password in it. Agents and commands inherited `RESTIC_*`/`RCLONE_*` | **Fixed.** Errors are scrubbed of the password, of secret-looking settings and of the sign-in part of addresses. A password with a line break is rejected. `executor.cleanEnv` now withholds `RESTIC_*`, `RCLONE_*` and `B2_ACCOUNT_*`, which also reaches every agent through `agentEnv`; tested for all six agents. **Not fixed:** a process running as the user can read rclone's configuration file and the keyring. No sandbox exists |
+| 3 | State corruption | A damaged `storage.json` was read as an empty record, so a later retention run would believe nothing was verified, and the next write would erase the record | **Fixed.** Missing = new installation; valid = used; damaged or wrong shape = `state_corrupt`; another format version = `state_unsupported`. Backup, retention and status stop and leave the file untouched. Restore still works and does not write the record. Tested with six kinds of damage |
+| 4 | Retention race | The plan, the approval card and the removal were three separate moments; a backup made while the card was open could change what "keep the newest" meant | **Fixed.** The card carries the exact snapshot ids and a digest. After the answer the plan is recomputed under the lock; any difference, or a protected snapshot that is no longer on the target, removes nothing (`plan_changed`). The newest *verified* snapshot is protected, not the newest uploaded one; with no verified snapshot on record nothing is removed. **Not covered:** another computer deleting or adding snapshots between the recheck and the removal; a few milliseconds, and restic's own repository lock |
+| 5 | Restore safety | Only "not empty" was checked, which followed links; a failed restore left partial files; a snapshot id was any text | **Fixed.** A link or a file as destination is refused; a failed, cancelled or unverified restore removes what it wrote (the folder was empty, so everything in it is its own); snapshots must be named by 8+ hex characters and ambiguity is refused; a snapshot containing links is refused and removed. **Not covered:** restic itself decides how it writes file modes and times; a destination whose *parent* is a link is accepted, since that is a normal layout |
+| 6 | Cancellation and cleanup | Stop sent SIGINT then SIGKILL to restic only. Scratch folders of a run that died stayed | **Partly fixed.** Scratch folders and temporary state files are swept at the start of the next run, under the lock. A cancelled backup leaves no snapshot and no restic or rclone of the test behind (checked with `pgrep`). **Not claimed:** that detached descendants are stopped. restic is stopped by signal; the rclone process it started exits when restic closes its pipes in this test, which is not a guarantee for every tool version or for a hung rclone |
+
+Open, not fixed here:
+
+- **Content classification** (row 1): needs explicit file lists per set; waits for the harness store's layout.
+- **No sandbox**: a compromised user process can reach rclone's token and delete the remote repository. Mitigation by design: the optional independent copy with different credentials; an upload-only key where the provider offers one (**unverified** for both candidates).
+- **Passwords in the process environment** are visible to the same user (`/proc/<pid>/environ`) while restic runs.
+- **`prune`** is not exposed, so remote space is never freed by this code; that is deliberate until reviewed.
+- **Windows**: only the policy suite runs there; restic and rclone were not run on Windows.
+- **Google Drive**: untested. Drive's own trash, version history, quota and rate limits are unknown to these tests.
+- **Clock and time zones** are not used for any decision here.
