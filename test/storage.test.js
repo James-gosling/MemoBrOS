@@ -1,7 +1,7 @@
 // Tests for the storage placement policy. Plain Node, no tools, no network: runs on Linux and Windows.
 const assert = require('assert');
 const policy = require('../src/main/storage/policy');
-const { classify } = require('../src/main/storage/restic');
+const { classify, scrub } = require('../src/main/storage/restic');
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -53,6 +53,25 @@ test('freeing space: only what can be rebuilt, or what has a verified backup AND
   assert.deepEqual(approved.free.map((x) => x.path), ['node_modules', 'models/base', 'tasks/older', 'actions.log.1'], 'unverified data stays even when approved');
   assert.ok(approved.keep.some((x) => x.path === 'Documents/thesis.odt') && approved.keep.some((x) => x.path === 'settings.json'), 'old does not mean removable');
   assert.equal(typeof policy.evictionPlan, 'function'); assert.ok(!/unlink|rmSync|rmdir/.test(require('fs').readFileSync(require.resolve('../src/main/storage/policy'), 'utf8')), 'the policy module cannot delete anything');
+});
+
+test('a file-name guard refuses credentials, keys, caches, models and logs whatever category the caller claims', () => {
+  for (const f of ['.env', '.env.production', 'config/.env.local', 'secrets.json', 'sub/credentials.json', 'token', 'keys/server.pem', 'tls/site.key', 'id_rsa', '.ssh/id_ed25519', 'rclone.conf', '.npmrc', '.git-credentials', '.aws/credentials',
+    'node_modules/x/index.js', '.git/config', 'dist/app.deb', 'models/base.onnx', 'sherpa-onnx-whisper-tiny.tar.bz2', 'actions.log', 'logs/app.log.1', 'Cookies', 'Local Storage/leveldb/000003.log', 'vault.kdbx', 'oauth-tokens.json']) {
+    assert.ok(policy.forbiddenFile(f), f);
+  }
+  for (const f of ['settings.json', 'memory.json', 'routines.json', 'tasks/t_1/task.json', 'tasks/t_1/events.ndjson', 'skills/review.md', 'notas/año nuevo.txt', 'environment.md', 'keyboard.json', 'tokenizer-notes.md', 'blob.bin']) {
+    assert.equal(policy.forbiddenFile(f), '', f);
+  }
+  // names that become snapshot tags cannot smuggle a second tag in
+  for (const ok of ['profile', 'pc-1', 'routine-7@2026-11-17T09:00']) assert.equal(policy.safeName(ok), true, ok);
+  for (const bad of ['a,b', 'set:x,manifest:0', 'two words', '', '-leading', 'x'.repeat(81), null, 'line\nbreak']) assert.equal(policy.safeName(bad), false, String(bad));
+});
+
+test('error text never carries a password or the sign-in part of an address', () => {
+  assert.equal(scrub('Fatal: unable to open rest:https://roy:hunter2@backup.example/repo', []), 'Fatal: unable to open rest:https://[redacted]@backup.example/repo');
+  assert.equal(scrub('password "correct horse battery" was wrong; correct horse battery', ['correct horse battery']), 'password "[redacted]" was wrong; [redacted]');
+  assert.equal(scrub('nothing secret here', ['', 'ab']), 'nothing secret here', 'very short values are not treated as secrets (they would shred the text)');
 });
 
 test('the disk budget reports what is over its ceiling', () => {

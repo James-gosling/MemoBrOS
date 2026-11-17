@@ -54,6 +54,30 @@ function mayUpload(category, { approved = false } = {}) {
   return { ok: true, reason: '' };
 }
 
+// A second guard, by file name, for whatever folder a caller hands over as a backup set. The category says what
+// the caller claims the data is; this refuses files that are credentials, keys, caches or models whatever the claim.
+// It is a net for mistakes, not a proof: a secret saved under an innocent name, or pasted inside a settings file,
+// passes. What a set contains has to be decided by the code that builds it, from an explicit list of files.
+const FORBIDDEN_FILES = [
+  [/(^|\/)\.env(\.|$)/i, 'an environment file'],
+  [/(^|\/)(secrets?|credentials?|tokens?)(\.[a-z0-9]+)?$/i, 'a credentials file'],
+  [/\.(pem|key|p12|pfx|jks|keystore|kdbx|gpg|asc)$/i, 'a key or certificate file'],
+  [/(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i, 'an SSH key'],
+  [/(^|\/)(rclone\.conf|\.netrc|\.npmrc|\.git-credentials|\.pgpass|auth\.json|oauth[^/]*\.json)$/i, 'a file that holds sign-in data'],
+  [/(^|\/)(\.ssh|\.gnupg|\.aws|\.kube|\.docker)\//i, 'a folder that holds keys'],
+  [/(^|\/)(\.git|node_modules|dist|\.cache|Cache|GPUCache|Code Cache)\//, 'a repository, dependency, build or cache folder'],
+  [/\.(onnx|gguf|safetensors|bin\.part|tar\.bz2)$/i, 'a model or download'],
+  [/(^|\/)(actions\.log|[^/]*\.log(\.\d+)?)$/i, 'a log'],
+  [/(^|\/)(Cookies|Login Data|Local State|Local Storage|Session Storage|IndexedDB)(\/|$|-journal$)/, 'browser session data'],
+];
+// → why this file (path relative to the set, with "/") may not be in a backup, or ''.
+function forbiddenFile(rel) {
+  const hit = FORBIDDEN_FILES.find(([re]) => re.test(String(rel)));
+  return hit ? hit[1] : '';
+}
+// Names used as snapshot tags: restic separates tags with commas, so a name must not be able to forge another tag.
+const safeName = (s) => typeof s === 'string' && /^[A-Za-z0-9][A-Za-z0-9._@:+-]{0,79}$/.test(s);
+
 // How far a backup of one set has got on one target. A later state is only reached through the ones before it.
 //   local_committed  the data is safely on this computer; nothing has been sent
 //   backup_pending   a backup was asked for; it has not finished (offline, interrupted, in progress)
@@ -102,4 +126,4 @@ function budgetReport(usage, limits) {
   });
 }
 
-module.exports = { CATEGORIES, placement, mayUpload, DURABILITY, MOVES, canMove, durability, evictionPlan, budgetReport };
+module.exports = { CATEGORIES, placement, mayUpload, forbiddenFile, safeName, DURABILITY, MOVES, canMove, durability, evictionPlan, budgetReport };

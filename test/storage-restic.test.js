@@ -212,6 +212,160 @@ test('what must never be uploaded is refused before anything is read or sent', a
   assert.equal((await w.orch.backup({ set: 'chat', dir, category: 'conversation_history', approved: true, only: ['drive'] })).targets.drive.state, 'verified');
 });
 
+test('the files themselves are checked: a set that contains credentials, keys, caches or links is refused whole, whatever it is called', async () => {
+  const w = await world();
+  const cases = { 'secrets.json': '{"openrouter":"sk-or-..."}', '.env': 'API_KEY=1', 'ssh/id_ed25519': 'key', 'certs/server.pem': 'pem', 'rclone.conf': '[gdrive]', 'node_modules/x/index.js': 'x', 'actions.log': 'ran' };
+  for (const [file, text] of Object.entries(cases)) {
+    const dir = data({ [file]: text });
+    let message = '';
+    assert.equal(await kindOf(w.orch.backup({ set: 'profile', dir, category: 'app_settings' }).catch((e) => { message = e.message; throw e; })), 'not_allowed', file);
+    assert.ok(message.includes(file) && /Nothing was sent/.test(message), `the refusal names the file: ${message}`);
+  }
+  const linked = data(); fs.symlinkSync('/etc/hostname', path.join(linked, 'link-out'));
+  assert.equal(await kindOf(w.orch.backup({ set: 'profile', dir: linked, category: 'app_settings' })), 'not_allowed');
+  const viaLink = path.join(root, `link-${++n}`); fs.symlinkSync(data(), viaLink);
+  assert.equal(await kindOf(w.orch.backup({ set: 'profile', dir: viaLink, category: 'app_settings' })), 'not_allowed', 'the set folder itself may not be a link');
+  const empty = path.join(root, `empty-${++n}`); fs.mkdirSync(empty);
+  assert.equal(await kindOf(w.orch.backup({ set: 'profile', dir: empty, category: 'app_settings' })), 'not_allowed');
+  for (const name of ['a,b', 'set:x,manifest:0', 'two words']) assert.equal(await kindOf(w.orch.backup({ set: name, dir: data(), category: 'app_settings' })), 'not_allowed', name);
+  assert.equal(await kindOf(w.orch.backup({ set: 'profile', dir: data(), category: 'app_settings', key: 'k,key:other' })), 'not_allowed');
+  assert.deepEqual([await w.count(w.primary), await w.count(w.recovery), w.orch.status()], [0, 0, []], 'nothing reached either target and nothing was recorded');
+});
+
+test('a backup record that cannot be trusted stops everything except a restore; it is never mistaken for a new installation', async () => {
+  const w = await world(), dir = data();
+  const state = path.join(root, `state-${++n}`);
+  const orch = w.make({ state, approve: async () => true });
+  for (let i = 0; i < 2; i++) { fs.writeFileSync(path.join(dir, 'settings.json'), `{"v":${i}}`); await orch.backup({ set: 'profile', dir, category: 'app_settings', only: ['drive'] }); }
+  const file = path.join(state, 'storage.json');
+  const good = fs.readFileSync(file, 'utf8');
+  assert.equal(JSON.parse(good).version, 1);
+  const broken = { 'state_corrupt (cut off)': good.slice(0, good.length / 2), 'state_corrupt (not an object)': '[]', 'state_corrupt (sets missing)': '{"version":1}', 'state_corrupt (unknown state)': good.replace('"verified"', '"totally-fine"'),
+    'state_unsupported (newer)': good.replace('"version": 1', '"version": 2'), 'state_unsupported (no version)': good.replace(/\n "version": 1,?/, '').replace(/,\s*"version": 1/, '') };
+  for (const [label, text] of Object.entries(broken)) {
+    fs.writeFileSync(file, text);
+    const want = label.split(' ')[0];
+    fs.appendFileSync(path.join(dir, 'settings.json'), ' ');
+    assert.equal(await kindOf(orch.backup({ set: 'profile', dir, category: 'app_settings', only: ['drive'] })), want, `backup: ${label}`);
+    assert.equal(await kindOf(orch.retentionPlan({ set: 'profile', on: 'drive', keepLast: 1 })), want, `retention plan: ${label}`);
+    assert.equal(await kindOf(orch.applyRetention({ set: 'profile', on: 'drive', keepLast: 1 })), want, `retention: ${label}`);
+    assert.equal(await kindOf(Promise.resolve().then(() => orch.status())), want, `status: ${label}`);
+    assert.equal(fs.readFileSync(file, 'utf8'), text, `the damaged record is left exactly as it was: ${label}`);
+    assert.equal(await w.count(w.primary), 2, `nothing was uploaded or removed: ${label}`);
+    // the one thing that must still work: getting the data back
+    const into = path.join(root, `restore-${++n}`);
+    assert.equal((await orch.restore({ set: 'profile', from: 'drive', into })).verified, true, `restore: ${label}`);
+    assert.equal(fs.readFileSync(file, 'utf8'), text);
+  }
+  assert.ok(!fs.existsSync(path.join(state, 'backup.lock')), 'no lock is left behind by a refused run');
+  fs.rmSync(file); // no record at all is a new installation, and that is fine
+  assert.deepEqual(orch.status(), []);
+  assert.equal((await orch.backup({ set: 'profile', dir, category: 'app_settings', only: ['drive'] })).targets.drive.state, 'verified');
+});
+
+test('retention: an approval covers one exact deletion; if the backups changed meanwhile, nothing is removed', async () => {
+  const w = await world(), dir = data();
+  const state = path.join(root, `state-${++n}`);
+  const bump = async (o) => { fs.appendFileSync(path.join(dir, 'settings.json'), ' '); return o.backup({ set: 'profile', dir, category: 'app_settings', only: ['drive'] }); };
+  let during = async () => {};
+  const seen = [];
+  const orch = w.make({ state, approve: async (q) => { seen.push(q); await during(); return true; } });
+  for (let i = 0; i < 3; i++) await bump(orch);
+  const plan = await orch.retentionPlan({ set: 'profile', on: 'drive', keepLast: 1 });
+  assert.equal(plan.remove.length, 2); assert.match(plan.digest, /^[0-9a-f]{64}$/);
+  during = () => bump(orch); // while the card is open, a new backup is made
+  assert.equal(await kindOf(orch.applyRetention({ set: 'profile', on: 'drive', keepLast: 1 })), 'plan_changed');
+  assert.equal(await w.count(w.primary), 4, 'the stale approval removed nothing');
+  assert.deepEqual([seen[0].snapshots.length, seen[0].digest], [2, plan.digest], 'the card names exactly what would go');
+  during = async () => {};
+  assert.equal((await orch.applyRetention({ set: 'profile', on: 'drive', keepLast: 1 })).removed.length, 3);
+  // the newest snapshot is not always the verified one: an upload that was never read back must not push the verified one out
+  let failCheck = true;
+  const flaky = createOrchestrator({ stateDir: state, targets: [w.primary], getPassword: async () => PASSWORD, approve: async () => true, restic: { ...restic, check: async (o) => { if (failCheck) throw new restic.ResticError('unreachable', 'offline'); return restic.check(o); } } });
+  const verifiedId = orch.status('profile').targets.drive.snapshot;
+  // (a new run marks the target pending first; the previously verified snapshot stays on the target)
+  fs.appendFileSync(path.join(dir, 'settings.json'), ' ');
+  const r = await flaky.backup({ set: 'profile', dir, category: 'app_settings' });
+  assert.equal(r.targets.drive.state, 'uploaded');
+  assert.equal(await kindOf(flaky.applyRetention({ set: 'profile', on: 'drive', keepLast: 1 })), 'not_allowed', 'with no verified snapshot on record, nothing may be removed');
+  assert.equal(await w.count(w.primary), 2);
+  failCheck = false;
+  await flaky.verifyUploaded({ set: 'profile', on: 'drive' });
+  const after = await flaky.retentionPlan({ set: 'profile', on: 'drive', keepLast: 1 });
+  assert.deepEqual([after.remove, after.protected === flaky.status('profile').targets.drive.snapshot], [[verifiedId], true]);
+});
+
+test('restore safety: no links, no leftovers after a failure, no ambiguous snapshot names', async () => {
+  const w = await world(), dir = data();
+  fs.writeFileSync(path.join(dir, 'large.bin'), crypto.randomBytes(30 * 1024 * 1024));
+  await w.orch.backup({ set: 'profile', dir, category: 'app_settings', only: ['drive'] });
+  // a link as destination is refused, even to an empty folder
+  const real = path.join(root, `real-${++n}`), link = path.join(root, `dest-link-${n}`); fs.mkdirSync(real); fs.symlinkSync(real, link);
+  assert.equal(await kindOf(w.orch.restore({ set: 'profile', from: 'drive', into: link })), 'not_empty');
+  assert.deepEqual(fs.readdirSync(real), []);
+  const asFile = path.join(root, `dest-file-${++n}`); fs.writeFileSync(asFile, 'x');
+  assert.equal(await kindOf(w.orch.restore({ set: 'profile', from: 'drive', into: asFile })), 'not_empty');
+  // interrupted: nothing half-restored stays behind, whether the folder existed before or not
+  for (const pre of [false, true]) {
+    const into = path.join(root, `restore-${++n}`); if (pre) fs.mkdirSync(into);
+    const abort = new AbortController(); setTimeout(() => abort.abort(), 250);
+    assert.equal(await kindOf(w.orch.restore({ set: 'profile', from: 'drive', into, signal: abort.signal })), 'cancelled');
+    assert.deepEqual(pre ? fs.readdirSync(into) : fs.existsSync(into), pre ? [] : false, 'no partial files are left');
+  }
+  for (const bad of ['abc', 'zzzzzzzz', '../../etc']) assert.equal(await kindOf(w.orch.restore({ set: 'profile', from: 'drive', into: path.join(root, `restore-${++n}`), snapshot: bad })), 'not_found', bad);
+  assert.equal(await kindOf(w.orch.restore({ set: 'a,b', from: 'drive', into: path.join(root, `restore-${++n}`) })), 'not_allowed');
+  // a snapshot made by something else, carrying a link: it is not restored, and nothing is left
+  const evil = path.join(root, `evil-${++n}`); fs.mkdirSync(evil); fs.writeFileSync(path.join(evil, 'a.txt'), 'a'); fs.symlinkSync('/etc', path.join(evil, 'system'));
+  await restic.backup(evil, { repo: w.primary.repo, password: PASSWORD, tags: ['set:foreign', `manifest:${manifest(evil).hash}`] });
+  const into = path.join(root, `restore-${++n}`);
+  assert.equal(await kindOf(w.orch.restore({ set: 'foreign', from: 'drive', into })), 'corrupt');
+  assert.ok(!fs.existsSync(into));
+});
+
+test('secrets stay where they belong: only the backup tool gets the password, and errors and records never carry it', async () => {
+  const w = await world(), dir = data();
+  const spy = path.join(root, 'env-spy.sh');
+  fs.writeFileSync(spy, '#!/bin/sh\nenv > "$SPY_OUT"\nexit 1\n'); fs.chmodSync(spy, 0o755);
+  Object.assign(process.env, { GITHUB_TOKEN: 'ghp_should_not_travel', OPENROUTER_API_KEY: 'or_should_not_travel', UNRELATED_SETTING: 'x' });
+  try {
+    const out = path.join(root, 'env-spy.txt');
+    await restic.run(['snapshots'], { repo: w.primary.repo, password: PASSWORD, env: { SPY_OUT: out }, binary: spy }).catch(() => {});
+    const seen = fs.readFileSync(out, 'utf8');
+    assert.ok(seen.includes(`RESTIC_PASSWORD=${PASSWORD}`), 'the tool itself receives the password, through its environment');
+    assert.ok(!/GITHUB_TOKEN|OPENROUTER_API_KEY|UNRELATED_SETTING/.test(seen), 'and nothing else from the app\'s environment');
+  } finally { for (const k of ['GITHUB_TOKEN', 'OPENROUTER_API_KEY', 'UNRELATED_SETTING']) delete process.env[k]; }
+  assert.ok(!('RESTIC_PASSWORD' in process.env) && !('RESTIC_REPOSITORY' in process.env), 'the app\'s own environment never holds them');
+  let err;
+  await w.make({ password: 'a-wrong-but-secret-looking-password' }).restore({ set: 'x', from: 'drive', into: path.join(root, `restore-${++n}`) }).catch((e) => { err = e; });
+  assert.equal(err.kind, 'wrong_password'); assert.ok(!`${err.message} ${err.detail}`.includes('a-wrong-but-secret-looking-password'));
+  assert.equal(await kindOf(restic.run(['snapshots'], { repo: w.primary.repo, password: 'two\nlines' })), 'missing_credentials');
+  const state = path.join(root, `state-${++n}`);
+  await w.make({ state }).backup({ set: 'profile', dir, category: 'app_settings' });
+  const written = allFiles(state);
+  assert.ok(written.length >= 1);
+  for (const f of written) assert.ok(!fs.readFileSync(f, 'utf8').includes(PASSWORD), f);
+});
+
+test('cancelling and crashing leave no scratch folders, and no backup tool process of ours behind', async () => {
+  const w = await world(), dir = data();
+  fs.writeFileSync(path.join(dir, 'large.bin'), crypto.randomBytes(24 * 1024 * 1024));
+  const state = path.join(root, `state-${++n}`);
+  const orch = w.make({ state });
+  const abort = new AbortController();
+  const pending = orch.backup({ set: 'profile', dir, category: 'app_settings', only: ['independent'], signal: abort.signal, limitKiB: 400 });
+  await sleep(1500); abort.abort(); await pending;
+  await sleep(800);
+  // Our own children only: restic, and the rclone it started for this repository. A helper that detaches itself
+  // from its parent would not be seen here, and stopping the parent does not guarantee stopping such a helper.
+  const left = spawnSync('pgrep', ['-af', 'restic|rclone']).stdout.toString().split('\n').filter((l) => l.includes(root));
+  assert.deepEqual(left, [], 'no restic or rclone of this test is still running');
+  // leftovers of a run that died: swept the next time a run holds the lock
+  fs.mkdirSync(path.join(state, 'verify-dead')); fs.writeFileSync(path.join(state, 'verify-dead', 'x'), 'x'); fs.writeFileSync(path.join(state, 'storage.json.123.tmp'), '{');
+  const r = await orch.backup({ set: 'profile', dir, category: 'app_settings', only: ['independent'] });
+  assert.equal(r.targets.independent.state, 'verified');
+  assert.deepEqual(fs.readdirSync(state).sort(), ['storage.json'], 'only the record remains');
+});
+
 test('disk full: a backup target without space stays pending, a restore without space fails cleanly, local data is untouched', async () => {
   const tiny = path.join(root, 'tiny');
   fs.mkdirSync(tiny);

@@ -5,6 +5,13 @@
 // restic through the environment of that one child process.
 const { spawn, execFile } = require('child_process');
 
+// Error text from the tools can quote the repository address; an address can carry a user name and a password.
+const scrub = (text, secrets = []) => {
+  let out = String(text).replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1[redacted]@');
+  for (const s of secrets) if (s && String(s).length >= 4) out = out.split(String(s)).join('[redacted]');
+  return out;
+};
+
 class ResticError extends Error {
   // kind: missing_tool | missing_credentials | wrong_password | unreachable | corrupt | no_space | cancelled | locked | failed
   constructor(kind, message, detail = '') { super(message); this.kind = kind; this.detail = detail; }
@@ -23,6 +30,7 @@ function classify(stderr) {
 // Runs restic once. → { stdout, stderr }; throws ResticError.
 function run(args, { repo, password, env = {}, cwd, signal, binary = 'restic' } = {}) {
   return new Promise((resolve, reject) => {
+    if (typeof password === 'string' && /[\r\n\0]/.test(password)) return reject(new ResticError('missing_credentials', 'The recovery password contains a line break, which the backup tool cannot take.'));
     if (repo && !password) return reject(new ResticError('missing_credentials', 'No recovery password is available, so nothing was sent or read.'));
     if (signal?.aborted) return reject(new ResticError('cancelled', 'Stopped.'));
     const childEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME, ...env, ...(repo ? { RESTIC_REPOSITORY: repo, RESTIC_PASSWORD: password } : {}) };
@@ -38,7 +46,8 @@ function run(args, { repo, password, env = {}, cwd, signal, binary = 'restic' } 
       if (signal?.aborted) return reject(new ResticError('cancelled', 'Stopped.'));
       if (code === 0) return resolve({ stdout, stderr });
       const [kind, message] = classify(stderr + stdout);
-      reject(new ResticError(kind, message, (stderr || stdout).trim().split('\n').slice(-4).join(' | ').slice(0, 500)));
+      // The detail is for a person looking at one failure. It never contains the password or an address's sign-in part.
+      reject(new ResticError(kind, message, scrub((stderr || stdout).trim().split('\n').slice(-4).join(' | ').slice(0, 500), [password, ...Object.entries(env).filter(([k]) => /PASS|SECRET|TOKEN|KEY/i.test(k)).map(([, v]) => v)])));
     }));
   });
 }
@@ -69,4 +78,4 @@ async function forgetPlan({ tags = [], keepLast, keepWithin, host = 'arvi', ...o
 // Removes exactly these snapshots. The space they used is only freed by `prune`, which this module does not expose.
 const forget = (ids, o) => (ids.length ? run(['forget', ...ids], o) : Promise.resolve());
 
-module.exports = { ResticError, classify, run, version, init, backup, snapshots, check, restore, forgetPlan, forget };
+module.exports = { ResticError, classify, scrub, run, version, init, backup, snapshots, check, restore, forgetPlan, forget };
